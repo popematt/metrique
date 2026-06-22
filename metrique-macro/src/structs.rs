@@ -18,7 +18,10 @@ pub(crate) fn generate_metrics_for_struct(
     fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
 ) -> Result<Ts2> {
     let struct_name = &input.ident;
-    let entry_name = if root_attributes.mode == MetricMode::Value {
+    let entry_name = if matches!(
+        root_attributes.mode,
+        MetricMode::Value | MetricMode::ValueObject
+    ) {
         format_ident!("{}Value", struct_name)
     } else {
         format_ident!("{}Entry", struct_name)
@@ -59,6 +62,19 @@ pub(crate) fn generate_metrics_for_struct(
                 &parsed_fields,
             )?
         }
+        MetricMode::ValueObject => {
+            value_impl::validate_object_value_impl_for_struct(
+                &root_attributes,
+                &entry_name,
+                &parsed_fields,
+            )?;
+            value_impl::generate_object_value_impl_for_struct(
+                &root_attributes,
+                &entry_name,
+                &input.generics,
+                &parsed_fields,
+            )?
+        }
         _ => entry_impl::generate_struct_entry_impl(
             &entry_name,
             &input.generics,
@@ -93,7 +109,8 @@ pub(crate) fn generate_metrics_for_struct(
         MetricMode::Subfield
         | MetricMode::SubfieldOwned
         | MetricMode::ValueString
-        | MetricMode::Value => {
+        | MetricMode::Value
+        | MetricMode::ValueObject => {
             quote! {}
         }
     };

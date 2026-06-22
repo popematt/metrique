@@ -285,6 +285,8 @@ impl<'a> EntryWriter<'a> for Collector {
 /// ValueWriter is used exactly once.
 struct FieldValueWriter<'a>(&'a mut Option<FieldData>);
 
+// NOTE: `object()` is not overridden — object values render as JSON strings via the
+// default fallback. A structured local representation could be added in the future.
 impl ValueWriter for FieldValueWriter<'_> {
     fn string(self, value: &str) {
         *self.0 = Some(FieldData::String(value.to_owned()));

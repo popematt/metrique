@@ -13,6 +13,7 @@ use metrique_writer_core::stream::IoStreamError;
 use metrique_writer_core::{
     Entry, EntryConfig, MetricFlags, Observation, Unit, ValidationError, ValidationErrorBuilder,
     Value,
+    value::{ObjectValue, ObjectWriter},
 };
 use rand::rngs::ThreadRng;
 use rand::{Rng, RngCore};
@@ -1716,6 +1717,116 @@ impl metrique_writer_core::ValueWriter for EmfArrayElementWriter<'_> {
     }
 
     fn error(self, _error: ValidationError) {}
+
+    fn object(self, value: &(impl ObjectValue + ?Sized)) {
+        let buf = self.0;
+        buf.push('{');
+        value.write_object(&mut EmfObjectFieldWriter { buf, first: true });
+        buf.push('}');
+    }
+}
+
+struct EmfObjectFieldWriter<'a> {
+    buf: &'a mut PrefixedStringBuf,
+    first: bool,
+}
+
+impl ObjectWriter for EmfObjectFieldWriter<'_> {
+    fn field(&mut self, name: &str, value: &(impl Value + ?Sized)) {
+        let before = self.buf.as_str().len();
+        if !self.first {
+            self.buf.push(',');
+        }
+        self.buf.json_string(name).push(':');
+        let after_key = self.buf.as_str().len();
+        value.write(EmfObjectValueWriter(self.buf));
+        if self.buf.as_str().len() > after_key {
+            self.first = false;
+        } else {
+            self.buf.truncate(before);
+        }
+    }
+}
+
+struct EmfObjectValueWriter<'a>(&'a mut PrefixedStringBuf);
+
+impl metrique_writer_core::ValueWriter for EmfObjectValueWriter<'_> {
+    fn string(self, value: &str) {
+        self.0.json_string(value);
+    }
+
+    fn values<'a, V: Value + 'a>(self, values: impl IntoIterator<Item = &'a V>) {
+        let buf = self.0;
+        buf.push('[');
+        let mut wrote_any = false;
+        for value in values {
+            let before = buf.as_str().len();
+            if wrote_any {
+                buf.push(',');
+            }
+            let after_sep = buf.as_str().len();
+            write_emf_object_value(buf, value);
+            if buf.as_str().len() > after_sep {
+                wrote_any = true;
+            } else {
+                buf.truncate(before);
+            }
+        }
+        buf.push(']');
+    }
+
+    fn metric<'a>(
+        self,
+        distribution: impl IntoIterator<Item = Observation>,
+        _unit: Unit,
+        _dimensions: impl IntoIterator<Item = (&'a str, &'a str)>,
+        _flags: MetricFlags<'_>,
+    ) {
+        let buf = self.0;
+        let mut iter = distribution.into_iter();
+        let Some(first) = iter.next() else { return };
+        match iter.next() {
+            None => write_emf_observation(buf, first),
+            Some(second) => {
+                buf.push('[');
+                let mut wrote_any = false;
+                // EMF requires omitting non-finite floats entirely rather than writing
+                // null/NaN, so each observation is individually checked for output
+                // (write_emf_observation produces nothing for non-finite values via
+                // clamp_to_finite returning None).
+                for obs in std::iter::once(first)
+                    .chain(std::iter::once(second))
+                    .chain(iter)
+                {
+                    let before = buf.as_str().len();
+                    if wrote_any {
+                        buf.push(',');
+                    }
+                    let after_sep = buf.as_str().len();
+                    write_emf_observation(buf, obs);
+                    if buf.as_str().len() > after_sep {
+                        wrote_any = true;
+                    } else {
+                        buf.truncate(before);
+                    }
+                }
+                buf.push(']');
+            }
+        }
+    }
+
+    fn error(self, _error: ValidationError) {}
+
+    fn object(self, value: &(impl ObjectValue + ?Sized)) {
+        let buf = self.0;
+        buf.push('{');
+        value.write_object(&mut EmfObjectFieldWriter { buf, first: true });
+        buf.push('}');
+    }
+}
+
+fn write_emf_object_value(buf: &mut PrefixedStringBuf, value: &(impl Value + ?Sized)) {
+    value.write(EmfObjectValueWriter(buf));
 }
 
 /// Write a single observation value into an EMF buffer.
@@ -1776,6 +1887,17 @@ impl metrique_writer_core::ValueWriter for ValueWriter<'_, '_> {
             }
         }
         buf.push(']');
+
+        if !self.entry.validations.skip_validate_unique {
+            self.validate_string();
+        }
+    }
+
+    fn object(mut self, value: &(impl ObjectValue + ?Sized)) {
+        let buf = &mut self.entry.state.string_fields_buf;
+        buf.push(',').json_string(&self.name).push(':').push('{');
+        value.write_object(&mut EmfObjectFieldWriter { buf, first: true });
+        buf.push('}');
 
         if !self.entry.validations.skip_validate_unique {
             self.validate_string();

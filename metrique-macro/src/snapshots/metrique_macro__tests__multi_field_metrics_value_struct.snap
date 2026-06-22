@@ -1,0 +1,58 @@
+---
+source: metrique-macro/src/lib.rs
+assertion_line: 1798
+expression: parsed_file
+---
+struct RequestValue {
+    request_id: &'static str,
+    count: u32,
+}
+#[doc(hidden)]
+#[allow(clippy::type_complexity)]
+pub struct RequestValueValue {
+    #[deprecated(
+        note = "these fields will become private in a future release. To introspect an entry, use `metrique::writer::test_util::test_entry`"
+    )]
+    #[doc(hidden)]
+    request_id: <&'static str as metrique::CloseValue>::Closed,
+    #[deprecated(
+        note = "these fields will become private in a future release. To introspect an entry, use `metrique::writer::test_util::test_entry`"
+    )]
+    #[doc(hidden)]
+    count: <u32 as metrique::CloseValue>::Closed,
+}
+impl ::metrique::writer::ObjectValue for RequestValueValue {
+    fn write_object(&self, writer: &mut impl ::metrique::writer::ObjectWriter) {
+        #[allow(deprecated)]
+        {
+            writer.field("request_id", &self.request_id);
+            writer.field("count", &self.count);
+        }
+    }
+}
+impl ::metrique::writer::Value for RequestValueValue {
+    fn write(&self, writer: impl ::metrique::writer::ValueWriter) {
+        writer.object(self);
+    }
+}
+impl metrique::CloseValue for &'_ RequestValue {
+    type Closed = RequestValueValue;
+    fn close(self) -> Self::Closed {
+        macro_rules! __metrique_self_expr {
+            () => {
+                self
+            };
+        }
+        #[allow(deprecated)]
+        RequestValueValue {
+            request_id: metrique::CloseValue::close(&__metrique_self_expr!().request_id),
+            count: metrique::CloseValue::close(&__metrique_self_expr!().count),
+        }
+    }
+}
+impl metrique::CloseValue for RequestValue {
+    type Closed = RequestValueValue;
+    fn close(self) -> Self::Closed {
+        <&Self>::close(&self)
+    }
+}

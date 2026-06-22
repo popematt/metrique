@@ -4,6 +4,7 @@
 use metrique_writer::{
     Entry, EntryConfig, EntryIoStream, EntryIoStreamExt as _, EntryWriter, FormatExt, MetricFlags,
     Observation, Unit, ValidationError, Value, ValueWriter, entry::WithGlobalDimensions,
+    value::{ObjectValue, ObjectWriter},
 };
 use metrique_writer_format_emf::{AllowSplitEntries, Emf};
 use smallvec::SmallVec;
@@ -323,4 +324,50 @@ fn test_merge_globals_and_merge_global_dimensions() {
     );
     assert_eq!(output.next().unwrap(), "");
     assert!(output.next().is_none());
+}
+
+// Regression test: WithGlobalDimensions must pass object() calls through to the
+// inner writer, not silently serialize them as strings via the default fallback.
+#[test]
+fn test_object_values_preserved_through_global_dimensions() {
+    struct Detail;
+    impl ObjectValue for Detail {
+        fn write_object(&self, writer: &mut impl ObjectWriter) {
+            writer.field("shard", &"blue");
+            writer.field("attempt", &3u64);
+        }
+    }
+    impl metrique_writer::Value for Detail {
+        fn write(&self, writer: impl metrique_writer::ValueWriter) {
+            writer.object(self);
+        }
+    }
+
+    struct TestEntry;
+    impl Entry for TestEntry {
+        fn write<'a>(&'a self, writer: &mut impl EntryWriter<'a>) {
+            writer.value("context", &Detail);
+        }
+    }
+
+    let mut global_dimensions: SmallVec<[(CowStr, CowStr); 1]> = SmallVec::new();
+    global_dimensions.push(("AZ".into(), "us-east-1a".into()));
+    let global_dimensions_entry = WithGlobalDimensions::<_, 1>::new_with_global_dimensions(
+        TestEntry,
+        global_dimensions,
+        HashSet::new(),
+    );
+
+    let mut output = Vec::new();
+    let mut stream = Emf::all_validations("MyApp".into(), vec![vec![]]).output_to(&mut output);
+    stream.next(&global_dimensions_entry).unwrap();
+    stream.flush().unwrap();
+
+    let json: serde_json::Value =
+        serde_json::from_str(String::from_utf8(output).unwrap().lines().next().unwrap()).unwrap();
+    // context must be a JSON object, not a JSON-escaped string
+    assert_eq!(
+        json["context"],
+        serde_json::json!({"shard": "blue", "attempt": 3})
+    );
 }

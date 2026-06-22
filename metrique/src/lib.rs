@@ -679,7 +679,9 @@ pub mod writer {
     pub use metrique_writer::{BoxEntry, EntryConfig, EntryWriter, core::Entry};
     pub use metrique_writer::{Convert, Unit};
     pub use metrique_writer::{EntryIoStream, IoStreamError};
-    pub use metrique_writer::{MetricFlags, MetricValue, Observation, Value, ValueWriter};
+    pub use metrique_writer::{
+        MetricFlags, MetricValue, ObjectValue, ObjectWriter, Observation, Value, ValueWriter,
+    };
     pub use metrique_writer::{ValidationError, ValidationErrorBuilder};
 
     // Use the variant of the macro that has `metrique::` prefixes.

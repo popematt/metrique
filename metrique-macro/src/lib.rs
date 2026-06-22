@@ -49,6 +49,7 @@ use crate::inflect::{name_contains_dot, name_contains_uninflectables, name_ends_
 /// | `subfield_owned` | Flag | When set, this metric can only be used when nested within other metrics. It cannot be added to a sink directly. | `#[metrics(subfield_owned)]` |
 /// | `value` | Flag | Used for *structs*. Makes the struct a value newtype | `#[metrics(value)]` |
 /// | `value(string)` | Flag | Used for *enums*. Transforms the enum into a string value. Automatically derives `Debug`, `Clone`, and `Copy` on the generated Value enum. The base enum is left untouched — derive what you need on it yourself. | `#[metrics(value(string))]` |
+/// | `value(object)` | Flag | Used for *structs*. Emits all non-ignored fields as a nested object value | `#[metrics(value(object))]` |
 /// | `sample_group` | Flag | On `#[metrics(value)]`, forwards `sample_group` to the inner field | `#[metrics(value, sample_group)]` |
 ///
 /// # Field Attributes
@@ -597,6 +598,7 @@ enum OwnershipKind {
 #[darling(from_word = Self::from_word)]
 struct ValueAttributes {
     string: Flag,
+    object: Flag,
 }
 
 impl ValueAttributes {
@@ -743,6 +745,7 @@ enum MetricMode {
     SubfieldOwned,
     Value,
     ValueString,
+    ValueObject,
 }
 
 #[derive(Debug, Default)]
@@ -764,13 +767,17 @@ impl RawRootAttributes {
     fn validate(self) -> darling::Result<RootAttributes> {
         let mut out: Option<(MetricMode, &'static str)> = None;
         if let Some(value_attrs) = self.value {
+            if value_attrs.string.is_present() && value_attrs.object.is_present() {
+                return Err(cannot_combine_error(
+                    "string",
+                    "object",
+                    value_attrs.object.span(),
+                ));
+            }
             if value_attrs.string.is_present() {
-                out = set_exclusive(
-                    |_| MetricMode::ValueString,
-                    "value",
-                    out,
-                    &value_attrs.string,
-                )?
+                out = Some((MetricMode::ValueString, "value"));
+            } else if value_attrs.object.is_present() {
+                out = Some((MetricMode::ValueObject, "value"));
             } else {
                 out = Some((MetricMode::Value, "value"));
             }
@@ -784,18 +791,27 @@ impl RawRootAttributes {
         )?;
         let mut mode = out.map(|(s, _)| s).unwrap_or_default();
         let sample_group = if self.sample_group.is_present() {
-            if let MetricMode::Value = &mut mode {
-                true
-            } else {
-                return Err(darling::Error::custom(
-                    "`sample_group` as a top-level attribute can only be used with #[metrics(value)]",
-                )
-                .with_span(&self.sample_group.span()));
+            match &mut mode {
+                MetricMode::Value => true,
+                MetricMode::ValueObject => {
+                    return Err(darling::Error::custom(
+                        "`sample_group` is not supported for #[metrics(value(object))]",
+                    )
+                    .with_span(&self.sample_group.span()));
+                }
+                _ => {
+                    return Err(darling::Error::custom(
+                        "`sample_group` as a top-level attribute can only be used with #[metrics(value)]",
+                    )
+                    .with_span(&self.sample_group.span()));
+                }
             }
         } else {
             false
         };
-        if let (MetricMode::ValueString, Some(ds)) = (mode, &self.emf_dimensions) {
+        if let (MetricMode::ValueString | MetricMode::ValueObject, Some(ds)) =
+            (mode, &self.emf_dimensions)
+        {
             return Err(
                 darling::Error::custom("value does not make sense with dimension-sets")
                     .with_span(&ds.span()),
@@ -811,6 +827,10 @@ impl RawRootAttributes {
                     "value and value(string) do not support tag",
                 )
                 .with_span(&tag.span())),
+                MetricMode::ValueObject => {
+                    Err(darling::Error::custom("value(object) does not support tag")
+                        .with_span(&tag.span()))
+                }
             })
             .transpose()?;
 
@@ -861,9 +881,10 @@ impl RootAttributes {
     fn ownership_kind(&self) -> OwnershipKind {
         match self.mode {
             MetricMode::RootEntry | MetricMode::SubfieldOwned => OwnershipKind::ByValue,
-            MetricMode::Subfield | MetricMode::ValueString | MetricMode::Value => {
-                OwnershipKind::ByRef
-            }
+            MetricMode::Subfield
+            | MetricMode::ValueString
+            | MetricMode::Value
+            | MetricMode::ValueObject => OwnershipKind::ByRef,
         }
     }
 
@@ -1465,6 +1486,26 @@ fn generate_metrics(root_attributes: RootAttributes, input: DeriveInput) -> Resu
                 ));
             }
         },
+        MetricMode::ValueObject => match &input.data {
+            Data::Struct(data_struct) => {
+                let fields = match &data_struct.fields {
+                    Fields::Named(fields_named) => &fields_named.named,
+                    _ => {
+                        return Err(Error::new_spanned(
+                            &input,
+                            "Only named fields are supported",
+                        ));
+                    }
+                };
+                structs::generate_metrics_for_struct(root_attributes, &input, fields)?
+            }
+            _ => {
+                return Err(Error::new_spanned(
+                    &input,
+                    "Only structs are supported with value(object)",
+                ));
+            }
+        },
         MetricMode::ValueString => {
             let variants = match &input.data {
                 Data::Enum(data_enum) => &data_enum.variants,
@@ -1742,6 +1783,19 @@ mod tests {
 
         let parsed_file = metrics_impl_string(input, quote!(metrics(value, sample_group)));
         assert_snapshot!("sample_group_metrics_value_struct", parsed_file);
+    }
+
+    #[test]
+    fn test_multi_field_metrics_value_struct() {
+        let input = quote! {
+            struct RequestValue {
+                request_id: &'static str,
+                count: u32,
+            }
+        };
+
+        let parsed_file = metrics_impl_string(input, quote!(metrics(value(object))));
+        assert_snapshot!("multi_field_metrics_value_struct", parsed_file);
     }
 
     #[test]

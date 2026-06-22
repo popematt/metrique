@@ -17,7 +17,7 @@ use metrique_core::{CloseEntry, InflectableEntry};
 use metrique_writer_core::{
     MetricFlags,
     entry::SampleGroupElement,
-    value::{FlagConstructor, ForceFlag, MetricOptions},
+    value::{FlagConstructor, ForceFlag, MetricOptions, ObjectValue, ObjectWriter},
 };
 use ordered_float::OrderedFloat;
 
@@ -57,6 +57,8 @@ pub struct TestEntry {
     pub timestamp: Option<SystemTime>,
     /// String values in the entry, mapped by field name.
     pub values: TestMap<String>,
+    /// Structured object values in the entry, mapped by field name.
+    pub objects: TestMap<TestObject>,
     /// Metric values in the entry, mapped by field name.
     pub metrics: TestMap<Metric>,
 }
@@ -109,8 +111,87 @@ impl TestEntry {
         Self {
             timestamp: None,
             values: Default::default(),
+            objects: Default::default(),
             metrics: Default::default(),
         }
+    }
+}
+
+/// A structured object captured by the test utility.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TestObject {
+    fields: TestMap<TestObjectValue>,
+}
+
+impl std::ops::Deref for TestObject {
+    type Target = TestMap<TestObjectValue>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.fields
+    }
+}
+
+impl std::ops::Index<&str> for TestObject {
+    type Output = TestObjectValue;
+
+    fn index(&self, key: &str) -> &Self::Output {
+        &self.fields[key]
+    }
+}
+
+/// A value inside a [`TestObject`].
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum TestObjectValue {
+    /// A string property.
+    String(String),
+    /// A metric-shaped numeric value.
+    Metric(Metric),
+    /// A nested array.
+    Array(Vec<TestObjectValue>),
+    /// A nested object.
+    Object(TestObject),
+}
+
+impl TestObjectValue {
+    /// Returns this value as a nested object.
+    pub fn as_object(&self) -> Option<&TestObject> {
+        match self {
+            Self::Object(object) => Some(object),
+            _ => None,
+        }
+    }
+
+    /// Returns this value as an array.
+    pub fn as_array(&self) -> Option<&[TestObjectValue]> {
+        match self {
+            Self::Array(values) => Some(values),
+            _ => None,
+        }
+    }
+}
+
+impl PartialEq<&str> for TestObjectValue {
+    fn eq(&self, other: &&str) -> bool {
+        matches!(self, Self::String(value) if value == other)
+    }
+}
+
+impl PartialEq<u64> for TestObjectValue {
+    fn eq(&self, other: &u64) -> bool {
+        matches!(self, Self::Metric(metric) if metric == other)
+    }
+}
+
+impl PartialEq<f64> for TestObjectValue {
+    fn eq(&self, other: &f64) -> bool {
+        matches!(self, Self::Metric(metric) if metric == other)
+    }
+}
+
+impl PartialEq<bool> for TestObjectValue {
+    fn eq(&self, other: &bool) -> bool {
+        matches!(self, Self::Metric(metric) if metric == other)
     }
 }
 
@@ -266,6 +347,9 @@ impl<'a> EntryWriter<'a> for TestEntry {
             TestValue::Property(s) => {
                 self.values.0.insert(name.to_string(), s);
             }
+            TestValue::Object(object) => {
+                self.objects.0.insert(name.to_string(), object);
+            }
             TestValue::Metric(metric) => {
                 self.metrics.0.insert(name.to_string(), metric);
             }
@@ -287,6 +371,7 @@ struct TestValueWriter<'a> {
 #[derive(Default)]
 enum TestValue {
     Property(String),
+    Object(TestObject),
     Metric(Metric),
     #[default]
     Unset,
@@ -315,9 +400,85 @@ impl ValueWriter for TestValueWriter<'_> {
         })
     }
 
+    fn object(self, value: &(impl ObjectValue + ?Sized)) {
+        let mut object = TestObject::default();
+        value.write_object(&mut TestObjectWriter(&mut object));
+        *self.inner = TestValue::Object(object);
+    }
+
     fn error(self, error: metrique_writer_core::ValidationError) {
         panic!("metric returned an error: {error}")
     }
+}
+
+struct TestObjectWriter<'a>(&'a mut TestObject);
+
+impl ObjectWriter for TestObjectWriter<'_> {
+    fn field(&mut self, name: &str, value: &(impl crate::Value + ?Sized)) {
+        let mut captured = None;
+        value.write(NestedTestValueWriter {
+            inner: &mut captured,
+        });
+        if let Some(captured) = captured {
+            self.0.fields.0.insert(name.to_string(), captured);
+        }
+    }
+}
+
+struct NestedTestValueWriter<'a> {
+    inner: &'a mut Option<TestObjectValue>,
+}
+
+impl ValueWriter for NestedTestValueWriter<'_> {
+    fn string(self, value: &str) {
+        *self.inner = Some(TestObjectValue::String(value.to_string()));
+    }
+
+    fn values<'a, V: crate::Value + 'a>(self, values: impl IntoIterator<Item = &'a V>) {
+        let mut captured = Vec::new();
+        for value in values {
+            if let Some(value) = capture_nested_object_value(value) {
+                captured.push(value);
+            }
+        }
+        *self.inner = Some(TestObjectValue::Array(captured));
+    }
+
+    fn metric<'a>(
+        self,
+        distribution: impl IntoIterator<Item = Observation>,
+        unit: Unit,
+        dimensions: impl IntoIterator<Item = (&'a str, &'a str)>,
+        flags: metrique_writer_core::MetricFlags<'_>,
+    ) {
+        *self.inner = Some(TestObjectValue::Metric(Metric {
+            distribution: distribution.into_iter().collect(),
+            unit,
+            dimensions: dimensions
+                .into_iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect(),
+            test_flag: flags.downcast::<TestFlagOpt>().is_some(),
+        }));
+    }
+
+    fn object(self, value: &(impl ObjectValue + ?Sized)) {
+        let mut object = TestObject::default();
+        value.write_object(&mut TestObjectWriter(&mut object));
+        *self.inner = Some(TestObjectValue::Object(object));
+    }
+
+    fn error(self, error: metrique_writer_core::ValidationError) {
+        panic!("metric returned an error: {error}")
+    }
+}
+
+fn capture_nested_object_value(value: &(impl crate::Value + ?Sized)) -> Option<TestObjectValue> {
+    let mut captured = None;
+    value.write(NestedTestValueWriter {
+        inner: &mut captured,
+    });
+    captured
 }
 
 /// Converts an [`Entry`] into a `TestEntry` that can be introspected

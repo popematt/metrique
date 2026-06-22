@@ -321,7 +321,8 @@ pub(crate) fn generate_metrics_for_enum(
         MetricMode::Subfield
         | MetricMode::SubfieldOwned
         | MetricMode::ValueString
-        | MetricMode::Value => {
+        | MetricMode::Value
+        | MetricMode::ValueObject => {
             quote! {}
         }
     };

@@ -6,7 +6,8 @@ use std::{any::Any, borrow::Cow, time::SystemTime};
 use smallvec::SmallVec;
 
 use crate::{
-    Entry, EntryWriter, Observation, Unit, ValidationError, Value, ValueWriter, value::MetricFlags,
+    Entry, EntryWriter, Observation, Unit, ValidationError, Value, ValueWriter,
+    value::{MetricFlags, ObjectValue, ObjectWriter},
 };
 
 use super::EntryConfig;
@@ -81,6 +82,45 @@ trait DynValueWriter {
     fn error(&mut self, error: ValidationError);
 
     fn values_str(&mut self, values: &[&str]);
+
+    fn object(&mut self, value: &dyn DynObjectValue);
+}
+
+trait DynObjectValue {
+    fn write_object(&self, writer: &mut dyn DynObjectWriter);
+}
+
+trait DynObjectWriter {
+    fn field(&mut self, name: &str, value: &dyn DynValue);
+}
+
+struct ObjectValueToDyn<'a, V: ?Sized>(&'a V);
+struct ObjectValueFromDyn<'a>(&'a dyn DynObjectValue);
+struct ObjectWriterToDyn<'a>(&'a mut dyn DynObjectWriter);
+struct ObjectWriterFromDyn<'a, W: ?Sized>(&'a mut W);
+
+impl<V: ObjectValue + ?Sized> DynObjectValue for ObjectValueToDyn<'_, V> {
+    fn write_object(&self, writer: &mut dyn DynObjectWriter) {
+        self.0.write_object(&mut ObjectWriterToDyn(writer));
+    }
+}
+
+impl ObjectWriter for ObjectWriterToDyn<'_> {
+    fn field(&mut self, name: &str, value: &(impl Value + ?Sized)) {
+        self.0.field(name, &ValueToDyn(value));
+    }
+}
+
+impl ObjectValue for ObjectValueFromDyn<'_> {
+    fn write_object(&self, writer: &mut impl ObjectWriter) {
+        self.0.write_object(&mut ObjectWriterFromDyn(writer));
+    }
+}
+
+impl<W: ObjectWriter + ?Sized> DynObjectWriter for ObjectWriterFromDyn<'_, W> {
+    fn field(&mut self, name: &str, value: &dyn DynValue) {
+        self.0.field(name, &ValueFromDyn(value));
+    }
 }
 
 impl<E: Entry + Send + 'static> DynEntry for E {
@@ -169,6 +209,10 @@ impl<W: ValueWriter> DynValueWriter for ValueWriterToDyn<W> {
     fn values_str(&mut self, values: &[&str]) {
         self.0.take().unwrap().values(values.iter())
     }
+
+    fn object(&mut self, value: &dyn DynObjectValue) {
+        self.0.take().unwrap().object(&ObjectValueFromDyn(value))
+    }
 }
 
 impl ValueWriter for ValueWriterFromDyn<'_> {
@@ -213,6 +257,10 @@ impl ValueWriter for ValueWriterFromDyn<'_> {
         let refs: SmallVec<[&str; 8]> = strs.iter().map(|s| s.as_str()).collect();
         self.0.values_str(&refs)
     }
+
+    fn object(self, value: &(impl ObjectValue + ?Sized)) {
+        self.0.object(&ObjectValueToDyn(value))
+    }
 }
 
 #[cfg(test)]
@@ -222,6 +270,40 @@ mod tests {
         EntryWriter, MetricValue as _, test_stream::DummyEntryWriter, value::WithDimensions,
     };
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn object_value_through_box_entry() {
+        struct TestObject;
+
+        impl ObjectValue for TestObject {
+            fn write_object(&self, writer: &mut impl ObjectWriter) {
+                writer.field("count", &2u64);
+                writer.field("name", &"duck");
+            }
+        }
+
+        impl Value for TestObject {
+            fn write(&self, writer: impl ValueWriter) {
+                writer.object(self)
+            }
+        }
+
+        struct TestEntry;
+        impl Entry for TestEntry {
+            fn write<'a>(&'a self, writer: &mut impl EntryWriter<'a>) {
+                writer.value("obj", &TestObject);
+            }
+        }
+
+        let mut writer = DummyEntryWriter::default();
+        <BoxEntry as Entry>::write(&TestEntry.boxed(), &mut writer);
+        // DummyValueWriter uses the default `object()` fallback which serializes as JSON string
+        let (name, rendered) = &writer.0[0];
+        assert_eq!(name, "obj");
+        let json: serde_json::Value = serde_json::from_str(rendered).unwrap();
+        assert_eq!(json["count"], 2);
+        assert_eq!(json["name"], "duck");
+    }
 
     #[test]
     fn dummy() {

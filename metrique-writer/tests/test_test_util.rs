@@ -4,7 +4,7 @@
 use metrique_writer::{
     AnyEntrySink, Entry, EntryConfig, EntrySink, EntryWriter, Observation,
     test_util::{TestEntry, TestEntrySink, render_entry_sink, test_entry_sink, to_test_entry},
-    value::Distribution,
+    value::{Distribution, ObjectValue, ObjectWriter},
 };
 use metrique_writer_format_emf::Emf;
 
@@ -118,5 +118,46 @@ fn render_queue_captures_emf_output() {
         display.matches("\"MyNamespace\"").count(),
         3,
         "each appended entry should appear in the display"
+    );
+}
+
+struct NestedObject;
+
+impl metrique_writer::Value for NestedObject {
+    fn write(&self, writer: impl metrique_writer::ValueWriter) {
+        writer.object(self);
+    }
+}
+
+impl ObjectValue for NestedObject {
+    fn write_object(&self, writer: &mut impl ObjectWriter) {
+        writer.field("count", &2u64);
+        writer.field("label", &"inner");
+        writer.field("items", &vec!["a", "b"]);
+    }
+}
+
+#[test]
+fn test_sink_records_object_properties() {
+    struct ObjectEntry;
+
+    impl Entry for ObjectEntry {
+        fn write<'a>(&'a self, writer: &mut impl EntryWriter<'a>) {
+            writer.value("Context", &NestedObject);
+        }
+    }
+
+    let entry = to_test_entry(ObjectEntry);
+    assert_eq!(entry.objects["Context"]["label"], "inner");
+    assert_eq!(entry.objects["Context"]["count"], 2);
+    let items = entry.objects["Context"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(
+        items[0],
+        metrique_writer::test_util::TestObjectValue::String("a".to_string())
+    );
+    assert_eq!(
+        items[1],
+        metrique_writer::test_util::TestObjectValue::String("b".to_string())
     );
 }

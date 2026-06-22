@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 
 use crate::{
     CowStr, Entry, EntryConfig, EntryWriter, MetricFlags, MetricValue, Observation, Unit,
-    ValidationError, Value, ValueWriter,
+    ValidationError, Value, ValueWriter, value::ObjectValue,
 };
 
 /// Adds a set of dimensions to a [Value] or [Entry] as (class, instance) pairs.
@@ -336,6 +336,10 @@ impl<W: ValueWriter> ValueWriter for Wrapper<'_, W> {
 
     fn error(self, error: ValidationError) {
         self.value.error(error)
+    }
+
+    fn object(self, value: &(impl ObjectValue + ?Sized)) {
+        self.value.object(value)
     }
 }
 

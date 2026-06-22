@@ -7,7 +7,9 @@ use std::{
 };
 
 use metrique_writer::{
-    Entry, EntryIoStream, EntrySink, EntryWriter, FormatExt, sink::BackgroundQueue,
+    Entry, EntryIoStream, EntrySink, EntryWriter, FormatExt, ValueWriter,
+    sink::BackgroundQueue,
+    value::{ObjectValue, ObjectWriter},
 };
 use metrique_writer_core::test_stream::TestSink;
 use metrique_writer_format_emf::Emf;
@@ -303,4 +305,52 @@ fn test_vec_single_observation_stays_scalar_in_emf() {
         .unwrap();
     let output: serde_json::Value = serde_json::from_str(&sink.dump()).unwrap();
     assert_json_diff::assert_json_eq!(output["Data"], serde_json::json!([10, 20]));
+}
+
+struct NestedObject;
+
+impl metrique_writer_core::Value for NestedObject {
+    fn write(&self, writer: impl ValueWriter) {
+        writer.object(self);
+    }
+}
+
+impl ObjectValue for NestedObject {
+    fn write_object(&self, writer: &mut impl ObjectWriter) {
+        writer.field("count", &2u64);
+        writer.field("label", &"inner");
+    }
+}
+
+struct ObjectEntry;
+
+impl Entry for ObjectEntry {
+    fn write<'a>(&'a self, writer: &mut impl EntryWriter<'a>) {
+        writer.timestamp(SystemTime::UNIX_EPOCH + Duration::from_secs(1));
+        writer.value("Context", &NestedObject);
+        writer.value("List", &vec![NestedObject]);
+    }
+}
+
+#[test]
+fn test_object_properties_emit_as_native_json_in_emf() {
+    let sink = TestSink::default();
+    let mut stream = Emf::all_validations("App".into(), vec![vec![]]).output_to(sink.clone());
+    stream.next(&ObjectEntry).unwrap();
+
+    let output: serde_json::Value = serde_json::from_str(&sink.dump()).unwrap();
+    assert_json_diff::assert_json_eq!(
+        output["Context"],
+        serde_json::json!({
+            "count": 2,
+            "label": "inner",
+        })
+    );
+    assert_json_diff::assert_json_eq!(
+        output["List"],
+        serde_json::json!([{
+            "count": 2,
+            "label": "inner",
+        }])
+    );
 }

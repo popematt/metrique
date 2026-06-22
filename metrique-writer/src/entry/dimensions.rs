@@ -5,6 +5,7 @@ use crate::CowStr;
 use metrique_writer_core::{
     Entry, EntryConfig, EntryWriter, MetricFlags, Observation, Unit, ValidationError, Value,
     ValueWriter,
+    value::ObjectValue,
 };
 use smallvec::SmallVec;
 use std::{
@@ -203,6 +204,10 @@ impl<V: Value> Value for ValueWrapper<'_, V> {
 
             fn error(self, error: ValidationError) {
                 self.writer.error(error)
+            }
+
+            fn object(self, value: &(impl ObjectValue + ?Sized)) {
+                self.writer.object(value)
             }
         }
 

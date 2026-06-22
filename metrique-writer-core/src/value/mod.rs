@@ -10,11 +10,13 @@ mod dimensions;
 mod flags;
 mod force;
 mod formatter;
+mod object;
 mod primitive;
 
 pub use dimensions::{WithDimension, WithDimensions, WithVecDimensions};
 pub use force::{FlagConstructor, ForceFlag};
 pub use formatter::{FormattedValue, Lifted, NotLifted, ToString, ValueFormatter};
+pub use object::{ObjectValue, ObjectWriter};
 use std::{borrow::Cow, fmt::Write, sync::Arc};
 
 pub use flags::{Distribution, MetricFlags, MetricOptions};
@@ -100,6 +102,20 @@ pub trait ValueWriter: Sized {
                 buf.truncate(before);
             }
         }
+        self.string(&buf);
+    }
+
+    /// Write a nested object value. Formats that support native objects can
+    /// override this to emit a structured representation. The default
+    /// serializes the object as a JSON string and passes it to [`ValueWriter::string`].
+    ///
+    /// Custom format implementations that do not override this method will
+    /// receive object data as a JSON-encoded string through their `string()`
+    /// method.
+    fn object(self, value: &(impl ObjectValue + ?Sized)) {
+        let mut buf = String::from("{");
+        value.write_object(&mut object::DefaultObjectWriter::new(&mut buf));
+        buf.push('}');
         self.string(&buf);
     }
 }

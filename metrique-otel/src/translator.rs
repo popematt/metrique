@@ -194,6 +194,8 @@ pub(crate) struct OtelValueWriter<'a, 'b> {
     pub(crate) name: Cow<'a, str>,
 }
 
+// NOTE: `object()` is not overridden — object values are serialized as JSON strings
+// via the default ValueWriter fallback. OTel has no native nested-object attribute type.
 impl<'a, 'b> ValueWriter for OtelValueWriter<'a, 'b> {
     fn string(self, value: &str) {
         // String fields become entry-wide attributes attached to every

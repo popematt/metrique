@@ -41,7 +41,10 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use crate::{MetricValue, Observation, ValidationError, Value, ValueWriter, value::MetricFlags};
+use crate::{
+    MetricValue, Observation, ValidationError, Value, ValueWriter,
+    value::{MetricFlags, ObjectValue},
+};
 
 /// Represent all metric value units allowed by
 /// [CloudWatch](https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_MetricDatum.html).
@@ -548,6 +551,10 @@ where
 
             fn error(self, error: ValidationError) {
                 self.writer.error(error)
+            }
+
+            fn object(self, value: &(impl ObjectValue + ?Sized)) {
+                self.writer.object(value)
             }
         }
 

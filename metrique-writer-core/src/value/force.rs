@@ -11,7 +11,7 @@ use derive_where::derive_where;
 
 use crate::{
     Entry, EntryIoStream, EntryWriter, IoStreamError, Observation, Unit, ValidationError,
-    ValueWriter,
+    ValueWriter, value::ObjectValue,
 };
 
 use super::{MetricFlags, MetricValue, Value};
@@ -128,6 +128,10 @@ impl<T: Value, FLAGS: FlagConstructor> Value for ForceFlag<T, FLAGS> {
 
             fn error(self, error: ValidationError) {
                 self.0.error(error)
+            }
+
+            fn object(self, value: &(impl ObjectValue + ?Sized)) {
+                self.0.object(value)
             }
         }
 

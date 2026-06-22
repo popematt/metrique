@@ -92,7 +92,7 @@ pub fn validate_value_impl_for_struct(
     if !matches!(root_attrs.rename_all, NameStyle::Preserve) {
         return Err(syn::Error::new(
             value_name.span(),
-            "NameStyle is not supported for #[metrics(value)]",
+            "`rename_all` is not supported for #[metrics(value)]",
         ));
     }
 
@@ -172,5 +172,139 @@ pub(crate) fn generate_value_impl_for_struct(
         }
 
         #sample_group_impl
+    })
+}
+
+pub(crate) fn validate_object_value_impl_for_struct(
+    root_attrs: &RootAttributes,
+    value_name: &Ident,
+    parsed_fields: &[MetricsField],
+) -> Result<(), syn::Error> {
+    for field in parsed_fields
+        .iter()
+        .filter(|f| !matches!(f.attrs.kind, MetricsFieldKind::Ignore(_)))
+    {
+        match &field.attrs.kind {
+            MetricsFieldKind::Field {
+                unit,
+                sample_group,
+                name,
+                format: _,
+            } => {
+                if unit.is_some() {
+                    return Err(syn::Error::new(
+                        field.span,
+                        "`unit` does not make sense with #[metrics(value(object))]",
+                    ));
+                }
+                if sample_group.is_some() {
+                    return Err(syn::Error::new(
+                        field.span,
+                        "`sample_group` does not make sense with #[metrics(value(object))]",
+                    ));
+                }
+                if name.is_some() {
+                    return Err(syn::Error::new(
+                        field.span,
+                        "`name` does not make sense with #[metrics(value(object))]",
+                    ));
+                }
+            }
+            _ => {
+                return Err(syn::Error::new(
+                    field.span,
+                    "only plain fields are supported in #[metrics(value(object))]",
+                ));
+            }
+        }
+    }
+    if root_attrs.sample_group {
+        return Err(syn::Error::new(
+            value_name.span(),
+            "`sample_group` is not supported for #[metrics(value(object))]",
+        ));
+    }
+    if root_attrs.emf_dimensions.is_some() {
+        return Err(syn::Error::new(
+            value_name.span(),
+            "emf_dimensions is not supported for #[metrics(value(object))]",
+        ));
+    }
+    if root_attrs.prefix.is_some() {
+        return Err(syn::Error::new(
+            value_name.span(),
+            "prefix is not supported for #[metrics(value(object))]",
+        ));
+    }
+    if !matches!(root_attrs.rename_all, NameStyle::Preserve) {
+        return Err(syn::Error::new(
+            value_name.span(),
+            "`rename_all` is not supported for #[metrics(value(object))]",
+        ));
+    }
+
+    Ok(())
+}
+
+pub(crate) fn generate_object_value_impl_for_struct(
+    _root_attrs: &RootAttributes,
+    value_name: &Ident,
+    generics: &syn::Generics,
+    parsed_fields: &[MetricsField],
+) -> Result<Ts2, syn::Error> {
+    let field_writes: Vec<Ts2> = parsed_fields
+        .iter()
+        .filter(|f| !matches!(f.attrs.kind, MetricsFieldKind::Ignore(_)))
+        .map(|field| match &field.attrs.kind {
+            MetricsFieldKind::Field {
+                unit: _,
+                sample_group: _,
+                name: _,
+                format,
+            } => {
+                let ident = &field.ident;
+                let field_name = syn::LitStr::new(
+                    field.name.as_deref().ok_or_else(|| {
+                        syn::Error::new(
+                            field.span,
+                            "#[metrics(value(object))] requires named fields",
+                        )
+                    })?,
+                    field.span,
+                );
+                let value = format_value(
+                    format,
+                    field.span,
+                    quote_spanned! {field.span=> &self.#ident },
+                );
+                let cfg_attrs = field.cfg_attrs();
+                Ok(quote_spanned! {field.span=>
+                    #(#cfg_attrs)*
+                    writer.field(#field_name, #value);
+                })
+            }
+            _ => Err(syn::Error::new(
+                field.span,
+                "only plain fields are supported in #[metrics(value(object))]",
+            )),
+        })
+        .collect::<Result<_, _>>()?;
+
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    Ok(quote! {
+        impl #impl_generics ::metrique::writer::ObjectValue for #value_name #ty_generics #where_clause {
+            fn write_object(&self, writer: &mut impl ::metrique::writer::ObjectWriter) {
+                #[allow(deprecated)] {
+                    #(#field_writes)*
+                }
+            }
+        }
+
+        impl #impl_generics ::metrique::writer::Value for #value_name #ty_generics #where_clause {
+            fn write(&self, writer: impl ::metrique::writer::ValueWriter) {
+                writer.object(self);
+            }
+        }
     })
 }

@@ -1,0 +1,50 @@
+error: `sample_group` is not supported for #[metrics(value(object))]
+ --> tests/ui/fail/value_object_invalid.rs:8:26
+  |
+8 | #[metrics(value(object), sample_group)]
+  |                          ^^^^^^^^^^^^
+
+error: Only named fields are supported
+  --> tests/ui/fail/value_object_invalid.rs:15:1
+   |
+15 | struct TupleValue(u64, u64);
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: only plain fields are supported in #[metrics(value(object))]
+  --> tests/ui/fail/value_object_invalid.rs:20:5
+   |
+20 |     inner: Inner,
+   |     ^^^^^
+
+error: Only structs are supported with value(object)
+  --> tests/ui/fail/value_object_invalid.rs:25:1
+   |
+25 | / enum ObjectEnum {
+26 | |     A,
+27 | |     B,
+28 | | }
+   | |_^
+
+error: Cannot combine `string` with `object`
+  --> tests/ui/fail/value_object_invalid.rs:30:25
+   |
+30 | #[metrics(value(string, object))]
+   |                         ^^^^^^
+
+error: `unit` does not make sense with #[metrics(value(object))]
+  --> tests/ui/fail/value_object_invalid.rs:38:5
+   |
+38 |     duration: u64,
+   |     ^^^^^^^^
+
+error: `rename_all` is not supported for #[metrics(value(object))]
+  --> tests/ui/fail/value_object_invalid.rs:42:8
+   |
+42 | struct WithRenameAll {
+   |        ^^^^^^^^^^^^^
+
+error: prefix is not supported for #[metrics(value(object))]
+  --> tests/ui/fail/value_object_invalid.rs:47:8
+   |
+47 | struct WithPrefix {
+   |        ^^^^^^^^^^

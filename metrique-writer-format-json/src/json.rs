@@ -10,7 +10,9 @@ use metrique_writer_core::entry::EntryConfig;
 use metrique_writer_core::format::Format;
 use metrique_writer_core::sample::SampledFormat;
 use metrique_writer_core::stream::IoStreamError;
-use metrique_writer_core::value::{MetricFlags, Observation, Value, ValueWriter};
+use metrique_writer_core::value::{
+    MetricFlags, ObjectValue, ObjectWriter, Observation, Value, ValueWriter,
+};
 use metrique_writer_core::{Entry, EntryWriter, Unit, ValidationError, ValidationErrorBuilder};
 use rand::rngs::ThreadRng;
 use rand::{Rng, RngCore};
@@ -253,6 +255,107 @@ impl ValueWriter for JsonArrayElementWriter<'_> {
     }
 
     fn error(self, _error: ValidationError) {}
+
+    fn object(self, value: &(impl ObjectValue + ?Sized)) {
+        self.0.push('{');
+        value.write_object(&mut JsonObjectFieldWriter {
+            buf: self.0,
+            first: true,
+        });
+        self.0.push('}');
+    }
+}
+
+struct JsonObjectFieldWriter<'a> {
+    buf: &'a mut String,
+    first: bool,
+}
+
+impl ObjectWriter for JsonObjectFieldWriter<'_> {
+    fn field(&mut self, name: &str, value: &(impl Value + ?Sized)) {
+        let before = self.buf.len();
+        if !self.first {
+            self.buf.push(',');
+        }
+        push_json_string(self.buf, name);
+        self.buf.push(':');
+        let after_key = self.buf.len();
+        value.write(JsonObjectValueWriter(self.buf));
+        if self.buf.len() > after_key {
+            self.first = false;
+        } else {
+            self.buf.truncate(before);
+        }
+    }
+}
+
+struct JsonObjectValueWriter<'a>(&'a mut String);
+
+impl ValueWriter for JsonObjectValueWriter<'_> {
+    fn string(self, value: &str) {
+        push_json_string(self.0, value);
+    }
+
+    fn values<'a, V: Value + 'a>(self, values: impl IntoIterator<Item = &'a V>) {
+        let buf = self.0;
+        buf.push('[');
+        let mut wrote_any = false;
+        for value in values {
+            let before = buf.len();
+            if wrote_any {
+                buf.push(',');
+            }
+            let after_sep = buf.len();
+            write_json_object_value(buf, value);
+            if buf.len() > after_sep {
+                wrote_any = true;
+            } else {
+                buf.truncate(before);
+            }
+        }
+        buf.push(']');
+    }
+
+    fn metric<'a>(
+        self,
+        distribution: impl IntoIterator<Item = Observation>,
+        _unit: Unit,
+        _dimensions: impl IntoIterator<Item = (&'a str, &'a str)>,
+        _flags: MetricFlags<'_>,
+    ) {
+        let buf = self.0;
+        let mut iter = distribution.into_iter();
+        let Some(first) = iter.next() else { return };
+        match iter.next() {
+            None => push_observation(buf, first, None),
+            Some(second) => {
+                buf.push('[');
+                push_observation(buf, first, None);
+                buf.push(',');
+                push_observation(buf, second, None);
+                for obs in iter {
+                    buf.push(',');
+                    push_observation(buf, obs, None);
+                }
+                buf.push(']');
+            }
+        }
+    }
+
+    fn error(self, _error: ValidationError) {}
+
+    fn object(self, value: &(impl ObjectValue + ?Sized)) {
+        self.0.push('{');
+        value.write_object(&mut JsonObjectFieldWriter {
+            buf: self.0,
+            first: true,
+        });
+        self.0.push('}');
+    }
+}
+
+fn write_json_object_value(buf: &mut String, value: &(impl Value + ?Sized)) {
+    value.write(JsonObjectValueWriter(buf));
 }
 
 impl<'b, 'c> ValueWriter for JsonValueWriter<'b, 'c> {
@@ -284,6 +387,15 @@ impl<'b, 'c> ValueWriter for JsonValueWriter<'b, 'c> {
             }
         }
         buf.push(']');
+    }
+
+    fn object(self, value: &(impl ObjectValue + ?Sized)) {
+        let buf = self.properties_buf;
+        buf.push(',');
+        push_json_string(buf, self.name);
+        buf.push_str(":{");
+        value.write_object(&mut JsonObjectFieldWriter { buf, first: true });
+        buf.push('}');
     }
 
     fn metric<'a>(
@@ -980,6 +1092,54 @@ mod tests {
         assert_eq!(
             json["properties"]["Data"],
             serde_json::json!([[1, 2, 3], [4, 5]])
+        );
+    }
+
+    struct NestedObject;
+
+    impl Value for NestedObject {
+        fn write(&self, writer: impl ValueWriter) {
+            writer.object(self);
+        }
+    }
+
+    impl ObjectValue for NestedObject {
+        fn write_object(&self, writer: &mut impl ObjectWriter) {
+            writer.field("count", &2u64);
+            writer.field("label", &"inner");
+        }
+    }
+
+    struct ObjectEntry;
+
+    impl Entry for ObjectEntry {
+        fn write<'a>(&'a self, writer: &mut impl EntryWriter<'a>) {
+            writer.timestamp(SystemTime::UNIX_EPOCH);
+            writer.value("Context", &NestedObject);
+            writer.value("List", &vec![NestedObject]);
+        }
+    }
+
+    #[test]
+    fn test_object_properties_emit_as_native_json() {
+        let mut format = Json::new();
+        let mut output = Vec::new();
+        format.format(&ObjectEntry, &mut output).unwrap();
+
+        let json = parse_output(&output);
+        assert_eq!(
+            json["properties"]["Context"],
+            serde_json::json!({
+                "count": 2,
+                "label": "inner",
+            })
+        );
+        assert_eq!(
+            json["properties"]["List"],
+            serde_json::json!([{
+                "count": 2,
+                "label": "inner",
+            }])
         );
     }
 }
