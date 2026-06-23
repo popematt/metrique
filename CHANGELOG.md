@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `NoAllocAppendOnDrop`: A zero-allocation RAII guard that closes and appends a metric entry on drop. Use instead of `AppendAndCloseOnDrop` when flush guards and handles are not needed.
+
 ## [0.1.26](https://github.com/awslabs/metrique/compare/metrique-v0.1.25...metrique-v0.1.26) - 2026-06-09
 
 ### Added
