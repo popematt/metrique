@@ -1,5 +1,6 @@
 ---
 source: metrique-macro/src/lib.rs
+assertion_line: 2310
 expression: parsed_file
 ---
 struct FlaggedMetrics {
@@ -235,6 +236,16 @@ const _: () = {
         }
     }
 };
+impl ::metrique::writer::value::ObjectValue for FlaggedMetricsEntry {
+    fn write_object<'__a>(
+        &'__a self,
+        writer: &mut impl ::metrique::writer::EntryWriter<'__a>,
+    ) {
+        <Self as ::metrique::InflectableEntry<
+            ::metrique::Identity,
+        >>::write(self, writer);
+    }
+}
 impl metrique::CloseValue for FlaggedMetrics {
     type Closed = FlaggedMetricsEntry;
     fn close(self) -> Self::Closed {

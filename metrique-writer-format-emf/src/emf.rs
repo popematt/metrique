@@ -1836,7 +1836,6 @@ impl metrique_writer_core::ValueWriter for EmfObjectMemberValueWriter<'_> {
     }
 
     fn error(self, _error: ValidationError) {}
-
 }
 
 /// Write a single observation value into an EMF buffer.

@@ -77,6 +77,14 @@ pub(crate) fn generate_metrics_for_struct(
         ),
     };
 
+    // Generate ObjectValue and ValueFormatter<_, AsObject> impls for entry-producing modes.
+    let object_value_impls = match root_attributes.mode {
+        MetricMode::RootEntry | MetricMode::Subfield | MetricMode::SubfieldOwned => {
+            generate_object_value_impls(&entry_name, &input.generics)
+        }
+        MetricMode::Value | MetricMode::ValueString => quote! {},
+    };
+
     let close_value_impl = generate_close_value_impls_for_struct(
         struct_name,
         &entry_name,
@@ -113,6 +121,7 @@ pub(crate) fn generate_metrics_for_struct(
         #warnings
         #entry_struct
         #inner_impl
+        #object_value_impls
         #close_value_impl
         #root_entry_specifics
     })
@@ -220,6 +229,22 @@ pub(crate) fn clean_base_struct(
     };
 
     expanded
+}
+
+/// Generate `ObjectValue` impl for entry structs.
+///
+/// This impl allows entry structs to be used as nested objects via `#[metrics(format = AsObject)]`.
+/// The blanket `impl<V: ObjectValue> ValueFormatter<V, NotLifted> for AsObject` in
+/// `metrique-writer-core` provides the `ValueFormatter` impl automatically.
+fn generate_object_value_impls(entry_name: &Ident, generics: &Generics) -> Ts2 {
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    quote! {
+        impl #impl_generics ::metrique::writer::value::ObjectValue for #entry_name #ty_generics #where_clause {
+            fn write_object<'__a>(&'__a self, writer: &mut impl ::metrique::writer::EntryWriter<'__a>) {
+                <Self as ::metrique::InflectableEntry<::metrique::Identity>>::write(self, writer);
+            }
+        }
+    }
 }
 
 pub(crate) fn clean_base_unnamed_struct(

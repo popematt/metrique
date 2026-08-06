@@ -15,8 +15,8 @@ mod primitive;
 
 pub use dimensions::{WithDimension, WithDimensions, WithVecDimensions};
 pub use force::{FlagConstructor, ForceFlag, ForceFlagEntryWriter};
-pub use formatter::{FormattedValue, Lifted, NotLifted, ToString, ValueFormatter};
-pub use object::ObjectValue;
+pub use formatter::{FormattedValue, Liftability, Lifted, NotLifted, ToString, ValueFormatter};
+pub use object::{AsObject, Each, ObjectValue};
 use std::{borrow::Cow, fmt::Write, sync::Arc};
 
 pub use flags::{Distribution, MetricFlags, MetricOptions};

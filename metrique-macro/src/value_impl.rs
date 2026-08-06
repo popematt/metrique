@@ -104,7 +104,7 @@ pub fn validate_value_impl_for_struct(
     Ok(())
 }
 
-pub(crate) fn format_value(format: &Option<syn::Path>, span: Span, field: Ts2) -> Ts2 {
+pub(crate) fn format_value(format: &Option<Box<syn::Type>>, span: Span, field: Ts2) -> Ts2 {
     if let Some(format) = format {
         quote_spanned! { span=> &::metrique::format::FormattedValue::<_, #format, _>::new(#field)}
     } else {

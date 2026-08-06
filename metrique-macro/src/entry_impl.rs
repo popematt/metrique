@@ -441,9 +441,9 @@ pub(crate) struct DescriptorFieldMeta {
     pub(crate) field_type: syn::Type,
     /// Whether this field goes through CloseValue (true) or is used directly as Value (false)
     pub(crate) close: bool,
-    /// Optional format path. When present and close is false, the raw type may not impl Value,
+    /// Optional format type. When present and close is false, the raw type may not impl Value,
     /// so shape/unit resolution falls back to Opaque/None.
-    pub(crate) format: Option<syn::Path>,
+    pub(crate) format: Option<Box<syn::Type>>,
 }
 
 /// Build a `Descriptors` chain from a base expression and cfg-aware children.
@@ -633,11 +633,11 @@ pub(crate) fn generate_style_matched_descriptor(
 }
 
 /// Generate the shape expression for a single field.
-/// Shape describes the field's type-level closed shape. Formatted fields fall back to Opaque
-/// because the raw/closed type may not impl Value (formatters handle the writing).
+/// Shape describes the field's type-level closed shape. Formatted fields with known formatters
+/// resolve to specific shapes; others fall back to Opaque.
 fn shape_expr(f: &DescriptorFieldMeta) -> Ts2 {
-    if f.format.is_some() {
-        return quote! { ::metrique::writer::core::descriptor::FieldShape::Opaque };
+    if let Some(format) = &f.format {
+        return format_shape_expr(format);
     }
     let field_type = anonymize_lifetimes(&f.field_type);
     if f.close {
@@ -645,6 +645,42 @@ fn shape_expr(f: &DescriptorFieldMeta) -> Ts2 {
     } else {
         quote! { <#field_type as ::metrique::writer::core::Value>::SHAPE }
     }
+}
+
+/// Resolve the shape for a known format type. Returns `Opaque` for unrecognized formats.
+fn format_shape_expr(format: &syn::Type) -> Ts2 {
+    if let syn::Type::Path(type_path) = format {
+        let last_seg = match type_path.path.segments.last() {
+            Some(seg) => seg,
+            None => {
+                return quote! { ::metrique::writer::core::descriptor::FieldShape::Opaque };
+            }
+        };
+        let ident_str = last_seg.ident.to_string();
+        match ident_str.as_str() {
+            "AsObject" => {
+                return quote! { ::metrique::writer::core::descriptor::FieldShape::Object };
+            }
+            "ToString" => {
+                return quote! { ::metrique::writer::core::descriptor::FieldShape::Known(
+                    ::metrique::writer::core::descriptor::KnownShape::String
+                ) };
+            }
+            "Each" => {
+                // Extract the generic argument and recurse
+                if let syn::PathArguments::AngleBracketed(args) = &last_seg.arguments
+                    && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+                {
+                    let inner_shape = format_shape_expr(inner_ty);
+                    return quote! { ::metrique::writer::core::descriptor::FieldShape::List(
+                        ::metrique::writer::core::descriptor::ShapeRef::new(&#inner_shape)
+                    ) };
+                }
+            }
+            _ => {}
+        }
+    }
+    quote! { ::metrique::writer::core::descriptor::FieldShape::Opaque }
 }
 
 /// Generate the unit expression for a single field.

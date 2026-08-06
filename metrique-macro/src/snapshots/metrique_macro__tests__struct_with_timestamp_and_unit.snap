@@ -1,5 +1,6 @@
 ---
 source: metrique-macro/src/lib.rs
+assertion_line: 2347
 expression: parsed_file
 ---
 struct TimestampMetrics {
@@ -180,6 +181,16 @@ const _: () = {
         }
     }
 };
+impl ::metrique::writer::value::ObjectValue for TimestampMetricsEntry {
+    fn write_object<'__a>(
+        &'__a self,
+        writer: &mut impl ::metrique::writer::EntryWriter<'__a>,
+    ) {
+        <Self as ::metrique::InflectableEntry<
+            ::metrique::Identity,
+        >>::write(self, writer);
+    }
+}
 impl metrique::CloseValue for TimestampMetrics {
     type Closed = TimestampMetricsEntry;
     fn close(self) -> Self::Closed {

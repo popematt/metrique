@@ -444,6 +444,8 @@ pub enum FieldShape<'a> {
     },
     /// A list/sequence.
     List(ShapeRef<'a>),
+    /// A nested object (fields emitted via `ObjectValue`).
+    Object,
     /// Shape not statically known.
     Opaque,
 }

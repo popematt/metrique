@@ -1036,7 +1036,7 @@ struct RawMetricsFieldAttrs {
     unit: Option<SpannedKv<syn::Path>>,
 
     #[darling(default)]
-    format: Option<SpannedKv<syn::Path>>,
+    format: Option<SpannedKv<FormatType>>,
 
     #[darling(default)]
     name: Option<SpannedKv<String>>,
@@ -1076,6 +1076,36 @@ impl<T: FromMeta> FromMeta for SpannedKv<T> {
             value_span,
             value,
         })
+    }
+}
+
+/// A format type parsed from `#[metrics(format = ...)]` attributes.
+///
+/// Supports both bare paths (`format = AsObject`) and string-quoted types
+/// with generics (`format = "Each<AsObject>"`).
+#[derive(Debug, Clone)]
+pub(crate) struct FormatType(pub(crate) syn::Type);
+
+impl FromMeta for FormatType {
+    fn from_expr(expr: &syn::Expr) -> darling::Result<Self> {
+        match expr {
+            syn::Expr::Path(ep) if ep.attrs.is_empty() => {
+                Ok(FormatType(syn::Type::Path(syn::TypePath {
+                    qself: ep.qself.clone(),
+                    path: ep.path.clone(),
+                })))
+            }
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(lit_str),
+                ..
+            }) => {
+                let ty: syn::Type = lit_str
+                    .parse()
+                    .map_err(|e| darling::Error::custom(e).with_span(lit_str))?;
+                Ok(FormatType(ty))
+            }
+            _ => Err(darling::Error::unexpected_expr_type(expr)),
+        }
     }
 }
 
@@ -1282,7 +1312,7 @@ impl RawMetricsFieldAttrs {
                     sample_group,
                     name: name.cloned(),
                     unit: unit.cloned(),
-                    format: format.cloned(),
+                    format: format.map(|f| Box::new(f.0.clone())),
                 },
             },
             flags: {
@@ -1578,7 +1608,7 @@ enum MetricsFieldKind {
     Field {
         unit: Option<syn::Path>,
         name: Option<String>,
-        format: Option<syn::Path>,
+        format: Option<Box<syn::Type>>,
         sample_group: Option<Span>,
     },
 }

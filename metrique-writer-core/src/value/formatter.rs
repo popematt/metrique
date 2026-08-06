@@ -9,6 +9,7 @@ mod private {
     pub trait Sealed {}
 }
 
+/// Sealed marker trait for [`ValueFormatter`] liftability variants ([`Lifted`] and [`NotLifted`]).
 pub trait Liftability: private::Sealed {}
 
 /// Marker for a [ValueFormatter] that is automatically lifted over types such as [Arc] and [Option].
