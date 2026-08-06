@@ -11,8 +11,8 @@ use derive_where::derive_where;
 use smallvec::SmallVec;
 
 use crate::{
-    Entry, EntryIoStream, EntryWriter, IoStreamError, Observation, Unit, ValidationError,
-    ValueWriter,
+    Entry, EntryIoStream, EntryWriter, IoStreamError, ObjectValue, Observation, Unit,
+    ValidationError, ValueWriter,
 };
 
 use super::{MetricFlags, MetricValue, VALUES_INLINE_CAPACITY, Value};
@@ -148,6 +148,10 @@ impl<T: Value, FLAGS: FlagConstructor> Value for ForceFlag<T, FLAGS> {
 
             fn error(self, error: ValidationError) {
                 self.0.error(error)
+            }
+
+            fn object<O: ObjectValue + ?Sized>(self, object: &O) {
+                self.0.object(object)
             }
 
             fn values<'a, V: Value + 'a>(self, values: impl IntoIterator<Item = &'a V>) {

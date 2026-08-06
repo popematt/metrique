@@ -252,6 +252,14 @@ impl ValueWriter for JsonArrayElementWriter<'_> {
         }
     }
 
+    fn object<O: metrique_writer_core::ObjectValue + ?Sized>(self, object: &O) {
+        let buf = self.0;
+        buf.push('{');
+        let mut obj_writer = JsonObjectMemberWriter { buf, first: true };
+        object.write_object(&mut obj_writer);
+        obj_writer.buf.push('}');
+    }
+
     fn error(self, _error: ValidationError) {}
 
     fn values<'a, V: Value + 'a>(self, values: impl IntoIterator<Item = &'a V>) {
@@ -289,6 +297,16 @@ impl<'b, 'c> ValueWriter for JsonValueWriter<'b, 'c> {
             }
         }
         buf.push(']');
+    }
+
+    fn object<O: metrique_writer_core::ObjectValue + ?Sized>(self, object: &O) {
+        let buf = self.properties_buf;
+        buf.push(',');
+        push_json_string(buf, self.name);
+        buf.push_str(":{");
+        let mut obj_writer = JsonObjectMemberWriter { buf, first: true };
+        object.write_object(&mut obj_writer);
+        obj_writer.buf.push('}');
     }
 
     fn metric<'a>(
@@ -411,6 +429,105 @@ fn push_json_string(buf: &mut String, s: &str) {
     }
     buf.push_str(&s[start..]);
     buf.push('"');
+}
+
+/// A monomorphic nested `EntryWriter` that renders object members as
+/// `"name": <value>` pairs into a `String` buffer. Ignores `timestamp`
+/// and `config` (objects have no timestamp or entry-level configuration).
+struct JsonObjectMemberWriter<'a> {
+    buf: &'a mut String,
+    first: bool,
+}
+
+impl<'a> EntryWriter<'a> for JsonObjectMemberWriter<'_> {
+    fn timestamp(&mut self, _timestamp: SystemTime) {
+        // Objects have no timestamp; ignore.
+    }
+
+    fn value(&mut self, name: impl Into<Cow<'a, str>>, value: &(impl Value + ?Sized)) {
+        let name = name.into();
+        if !self.first {
+            self.buf.push(',');
+        }
+        self.first = false;
+        push_json_string(self.buf, &name);
+        self.buf.push(':');
+        // Write the value using the object-member value writer which strips
+        // metric semantics (no unit, no dimensions — just bare values).
+        value.write(JsonObjectMemberValueWriter(self.buf));
+    }
+
+    fn config(&mut self, _config: &'a dyn metrique_writer_core::entry::EntryConfig) {
+        // Objects have no entry-level configuration; ignore.
+    }
+}
+
+/// `ValueWriter` for members inside an object in JSON format. Renders values
+/// as bare JSON (numbers as numbers, strings as strings). Metric semantics
+/// (unit, dimensions, flags) are discarded. Supports nested arrays and objects.
+struct JsonObjectMemberValueWriter<'a>(&'a mut String);
+
+impl metrique_writer_core::ValueWriter for JsonObjectMemberValueWriter<'_> {
+    fn string(self, value: &str) {
+        push_json_string(self.0, value);
+    }
+
+    fn metric<'a>(
+        self,
+        distribution: impl IntoIterator<Item = Observation>,
+        _unit: Unit,
+        _dimensions: impl IntoIterator<Item = (&'a str, &'a str)>,
+        _flags: MetricFlags<'_>,
+    ) {
+        // Same rendering as JsonArrayElementWriter — bare numeric values.
+        let buf = self.0;
+        let mut iter = distribution.into_iter();
+        let Some(first) = iter.next() else { return };
+        match iter.next() {
+            None => push_observation(buf, first, None),
+            Some(second) => {
+                buf.push('[');
+                push_observation(buf, first, None);
+                buf.push(',');
+                push_observation(buf, second, None);
+                for obs in iter {
+                    buf.push(',');
+                    push_observation(buf, obs, None);
+                }
+                buf.push(']');
+            }
+        }
+    }
+
+    fn values<'v, V: Value + 'v>(self, values: impl IntoIterator<Item = &'v V>) {
+        let buf = self.0;
+        buf.push('[');
+        let mut wrote_any = false;
+        for value in values {
+            let before = buf.len();
+            if wrote_any {
+                buf.push(',');
+            }
+            let after_sep = buf.len();
+            value.write(JsonObjectMemberValueWriter(buf));
+            if buf.len() > after_sep {
+                wrote_any = true;
+            } else {
+                buf.truncate(before);
+            }
+        }
+        buf.push(']');
+    }
+
+    fn object<O: metrique_writer_core::ObjectValue + ?Sized>(self, object: &O) {
+        let buf = self.0;
+        buf.push('{');
+        let mut obj_writer = JsonObjectMemberWriter { buf, first: true };
+        object.write_object(&mut obj_writer);
+        obj_writer.buf.push('}');
+    }
+
+    fn error(self, _error: ValidationError) {}
 }
 
 /// A wrapper around [`Json`] that supports sampling. Datapoints are emitted with
@@ -986,5 +1103,216 @@ mod tests {
             json["properties"]["Data"],
             serde_json::json!([[1, 2, 3], [4, 5]])
         );
+    }
+
+    // ============================================================
+    // Object value tests
+    // ============================================================
+
+    use metrique_writer_core::ObjectValue;
+
+    /// A simple phase struct simulating what the macro would generate.
+    struct Phase {
+        phase_type: &'static str,
+        duration: u64,
+    }
+
+    impl ObjectValue for Phase {
+        fn write_object<'a>(&'a self, writer: &mut impl EntryWriter<'a>) {
+            writer.value("Type", &self.phase_type);
+            writer.value("Duration", &self.duration);
+        }
+    }
+
+    /// Wrapper that calls `writer.object()` — simulates AsObject formatter.
+    struct AsObjVal<'a, T: ObjectValue>(&'a T);
+
+    impl<T: ObjectValue> Value for AsObjVal<'_, T> {
+        fn write(&self, writer: impl ValueWriter) {
+            writer.object(self.0);
+        }
+    }
+
+    struct ObjectEntry {
+        phase: Phase,
+    }
+
+    impl Entry for ObjectEntry {
+        fn write<'a>(&'a self, writer: &mut impl EntryWriter<'a>) {
+            writer.timestamp(SystemTime::UNIX_EPOCH + Duration::from_secs(1));
+            writer.value("RequestId", &"abc-123");
+            writer.value("RootPhase", &AsObjVal(&self.phase));
+        }
+    }
+
+    #[test]
+    fn test_object_renders_in_json_properties() {
+        let mut format = Json::new();
+        let mut output = Vec::new();
+        format
+            .format(
+                &ObjectEntry {
+                    phase: Phase {
+                        phase_type: "parse_expr",
+                        duration: 11,
+                    },
+                },
+                &mut output,
+            )
+            .unwrap();
+
+        let json = parse_output(&output);
+
+        // Object should appear in "properties"
+        assert_eq!(
+            json["properties"]["RootPhase"],
+            serde_json::json!({"Type": "parse_expr", "Duration": 11})
+        );
+
+        // No metric entry for object or its fields
+        assert!(json["metrics"].get("RootPhase").is_none());
+        assert!(json["metrics"].get("Type").is_none());
+        assert!(json["metrics"].get("Duration").is_none());
+    }
+
+    /// A recursive tree phase struct.
+    struct TreePhase {
+        phase_type: &'static str,
+        duration: u64,
+        children: Vec<TreePhase>,
+    }
+
+    impl ObjectValue for TreePhase {
+        fn write_object<'a>(&'a self, writer: &mut impl EntryWriter<'a>) {
+            writer.value("Type", &self.phase_type);
+            writer.value("Duration", &self.duration);
+            if !self.children.is_empty() {
+                let wrapped: Vec<AsObjVal<'_, TreePhase>> =
+                    self.children.iter().map(|c| AsObjVal(c)).collect();
+                writer.value("Phases", &wrapped);
+            }
+        }
+    }
+
+    struct TreeEntry {
+        phases: Vec<TreePhase>,
+    }
+
+    impl Entry for TreeEntry {
+        fn write<'a>(&'a self, writer: &mut impl EntryWriter<'a>) {
+            writer.timestamp(SystemTime::UNIX_EPOCH + Duration::from_secs(1));
+            let wrapped: Vec<AsObjVal<'_, TreePhase>> =
+                self.phases.iter().map(|p| AsObjVal(p)).collect();
+            writer.value("Phases", &wrapped);
+        }
+    }
+
+    #[test]
+    fn test_recursive_object_tree_in_json() {
+        let mut format = Json::new();
+        let mut output = Vec::new();
+        format
+            .format(
+                &TreeEntry {
+                    phases: vec![
+                        TreePhase {
+                            phase_type: "parse_expr",
+                            duration: 11,
+                            children: vec![],
+                        },
+                        TreePhase {
+                            phase_type: "eval",
+                            duration: 22,
+                            children: vec![TreePhase {
+                                phase_type: "multiply",
+                                duration: 33,
+                                children: vec![
+                                    TreePhase {
+                                        phase_type: "add",
+                                        duration: 44,
+                                        children: vec![],
+                                    },
+                                    TreePhase {
+                                        phase_type: "sub",
+                                        duration: 55,
+                                        children: vec![],
+                                    },
+                                ],
+                            }],
+                        },
+                    ],
+                },
+                &mut output,
+            )
+            .unwrap();
+
+        let json = parse_output(&output);
+
+        assert_eq!(
+            json["properties"]["Phases"],
+            serde_json::json!([
+                {"Type": "parse_expr", "Duration": 11},
+                {
+                    "Type": "eval",
+                    "Duration": 22,
+                    "Phases": [
+                        {
+                            "Type": "multiply",
+                            "Duration": 33,
+                            "Phases": [
+                                {"Type": "add", "Duration": 44},
+                                {"Type": "sub", "Duration": 55}
+                            ]
+                        }
+                    ]
+                }
+            ])
+        );
+    }
+
+    /// Test that metric-typed values inside an object render as bare numbers.
+    struct PhaseWithMetric {
+        name: &'static str,
+        latency_ms: u64,
+    }
+
+    impl ObjectValue for PhaseWithMetric {
+        fn write_object<'a>(&'a self, writer: &mut impl EntryWriter<'a>) {
+            writer.value("Name", &self.name);
+            writer.value(
+                "Latency",
+                &metrique_writer::unit::AsMilliseconds::from(self.latency_ms),
+            );
+        }
+    }
+
+    #[test]
+    fn test_metric_inside_object_renders_as_bare_number_in_json() {
+        let mut format = Json::new();
+        let mut output = Vec::new();
+        struct MetricObjEntry;
+        impl Entry for MetricObjEntry {
+            fn write<'a>(&'a self, writer: &mut impl EntryWriter<'a>) {
+                writer.timestamp(SystemTime::UNIX_EPOCH + Duration::from_secs(1));
+                let phase = PhaseWithMetric {
+                    name: "db_query",
+                    latency_ms: 42,
+                };
+                writer.value("Phase", &AsObjVal(&phase));
+            }
+        }
+        format.format(&MetricObjEntry, &mut output).unwrap();
+
+        let json = parse_output(&output);
+
+        // The metric value is a bare number in the object
+        assert_eq!(
+            json["properties"]["Phase"],
+            serde_json::json!({"Name": "db_query", "Latency": 42})
+        );
+
+        // No metrics entry for "Latency" or "Phase"
+        assert!(json.get("metrics").is_none() || json["metrics"].get("Phase").is_none());
+        assert!(json.get("metrics").is_none() || json["metrics"].get("Latency").is_none());
     }
 }

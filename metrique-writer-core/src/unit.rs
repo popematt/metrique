@@ -42,7 +42,7 @@ use std::{
 };
 
 use crate::{
-    MetricValue, Observation, ValidationError, Value, ValueWriter,
+    MetricValue, ObjectValue, Observation, ValidationError, Value, ValueWriter,
     value::{MetricFlags, VALUES_INLINE_CAPACITY},
 };
 use smallvec::SmallVec;
@@ -563,6 +563,10 @@ where
 
             fn error(self, error: ValidationError) {
                 self.writer.error(error)
+            }
+
+            fn object<O: ObjectValue + ?Sized>(self, object: &O) {
+                self.writer.object(object)
             }
 
             fn values<'a, V: Value + 'a>(self, values: impl IntoIterator<Item = &'a V>) {

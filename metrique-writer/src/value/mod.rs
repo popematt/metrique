@@ -12,5 +12,5 @@ pub use metrique_writer_core::value::{
     FormattedValue, Lifted, NotLifted, ToString, ValueFormatter,
 };
 pub use metrique_writer_core::value::{MetricFlags, MetricOptions, MetricValue};
-pub use metrique_writer_core::value::{Observation, Value, ValueWriter};
+pub use metrique_writer_core::value::{ObjectValue, Observation, Value, ValueWriter};
 pub use metrique_writer_core::value::{WithDimension, WithDimensions, WithVecDimensions};

@@ -10,11 +10,13 @@ mod dimensions;
 mod flags;
 mod force;
 mod formatter;
+mod object;
 mod primitive;
 
 pub use dimensions::{WithDimension, WithDimensions, WithVecDimensions};
 pub use force::{FlagConstructor, ForceFlag, ForceFlagEntryWriter};
 pub use formatter::{FormattedValue, Lifted, NotLifted, ToString, ValueFormatter};
+pub use object::ObjectValue;
 use std::{borrow::Cow, fmt::Write, sync::Arc};
 
 pub use flags::{Distribution, MetricFlags, MetricOptions};
@@ -112,6 +114,11 @@ pub trait ValueWriter: Sized {
     fn invalid(self, reason: impl Into<String>) {
         self.error(ValidationError::invalid(reason))
     }
+
+    /// Write a nested object. Formats with native object support (e.g. EMF, JSON)
+    /// override this to emit a structured object. The default drops the field
+    /// (emits nothing).
+    fn object<O: ObjectValue + ?Sized>(self, _object: &O) {}
 
     /// Write a list of values. Formats that support native arrays (e.g. EMF) can override this
     /// to emit a structured representation. The default is [`write_values_as_string`], which

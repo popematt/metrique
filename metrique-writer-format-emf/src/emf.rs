@@ -1715,12 +1715,128 @@ impl metrique_writer_core::ValueWriter for EmfArrayElementWriter<'_> {
         }
     }
 
+    fn object<O: metrique_writer_core::ObjectValue + ?Sized>(self, object: &O) {
+        let buf = self.0;
+        buf.push('{');
+        let mut obj_writer = EmfObjectMemberWriter { buf, first: true };
+        object.write_object(&mut obj_writer);
+        obj_writer.buf.push('}');
+    }
+
+    fn error(self, _error: ValidationError) {}
+}
+
+/// A monomorphic nested `EntryWriter` that renders object members as
+/// `"name": <value>` pairs into a `PrefixedStringBuf`. Ignores `timestamp`
+/// and `config` (objects have no timestamp or entry-level configuration).
+struct EmfObjectMemberWriter<'a> {
+    buf: &'a mut PrefixedStringBuf,
+    first: bool,
+}
+
+impl<'a> metrique_writer_core::EntryWriter<'a> for EmfObjectMemberWriter<'_> {
+    fn timestamp(&mut self, _timestamp: SystemTime) {
+        // Objects have no timestamp; ignore.
+    }
+
+    fn value(
+        &mut self,
+        name: impl Into<Cow<'a, str>>,
+        value: &(impl metrique_writer_core::Value + ?Sized),
+    ) {
+        let name = name.into();
+        if !self.first {
+            self.buf.push(',');
+        }
+        self.first = false;
+        self.buf.json_string(&name).push(':');
+        // Write the value using the array-element writer which strips metric
+        // semantics (no unit, no dimensions, no flags — just bare values).
+        value.write(EmfObjectMemberValueWriter(self.buf));
+    }
+
+    fn config(&mut self, _config: &'a dyn metrique_writer_core::entry::EntryConfig) {
+        // Objects have no entry-level configuration; ignore.
+    }
+}
+
+/// `ValueWriter` for members inside an object. Renders values as bare JSON
+/// (numbers as numbers, strings as strings). Metric semantics (unit,
+/// dimensions, flags) are discarded. Supports nested arrays and objects.
+struct EmfObjectMemberValueWriter<'a>(&'a mut PrefixedStringBuf);
+
+impl metrique_writer_core::ValueWriter for EmfObjectMemberValueWriter<'_> {
+    fn string(self, value: &str) {
+        self.0.json_string(value);
+    }
+
+    fn metric<'a>(
+        self,
+        distribution: impl IntoIterator<Item = Observation>,
+        _unit: Unit,
+        _dimensions: impl IntoIterator<Item = (&'a str, &'a str)>,
+        _flags: MetricFlags<'_>,
+    ) {
+        // Same rendering as EmfArrayElementWriter — bare numeric values.
+        let buf = self.0;
+        let mut iter = distribution.into_iter();
+        let Some(first) = iter.next() else { return };
+        match iter.next() {
+            None => write_emf_observation(buf, first),
+            Some(second) => {
+                buf.push('[');
+                let mut wrote_any = false;
+                for obs in std::iter::once(first)
+                    .chain(std::iter::once(second))
+                    .chain(iter)
+                {
+                    let before = buf.as_str().len();
+                    if wrote_any {
+                        buf.push(',');
+                    }
+                    let after_sep = buf.as_str().len();
+                    write_emf_observation(buf, obs);
+                    if buf.as_str().len() > after_sep {
+                        wrote_any = true;
+                    } else {
+                        buf.truncate(before);
+                    }
+                }
+                buf.push(']');
+            }
+        }
+    }
+
+    fn values<'v, V: Value + 'v>(self, values: impl IntoIterator<Item = &'v V>) {
+        let buf = self.0;
+        buf.push('[');
+        let mut wrote_any = false;
+        for value in values {
+            let before = buf.as_str().len();
+            if wrote_any {
+                buf.push(',');
+            }
+            let after_sep = buf.as_str().len();
+            value.write(EmfObjectMemberValueWriter(buf));
+            if buf.as_str().len() > after_sep {
+                wrote_any = true;
+            } else {
+                buf.truncate(before);
+            }
+        }
+        buf.push(']');
+    }
+
+    fn object<O: metrique_writer_core::ObjectValue + ?Sized>(self, object: &O) {
+        let buf = self.0;
+        buf.push('{');
+        let mut obj_writer = EmfObjectMemberWriter { buf, first: true };
+        object.write_object(&mut obj_writer);
+        obj_writer.buf.push('}');
+    }
+
     fn error(self, _error: ValidationError) {}
 
-    fn values<'a, V: Value + 'a>(self, values: impl IntoIterator<Item = &'a V>) {
-        // EMF arrays don't nest: a list inside an element becomes one joined element.
-        metrique_writer_core::value::write_values_as_string(self, values)
-    }
 }
 
 /// Write a single observation value into an EMF buffer.
@@ -1781,6 +1897,18 @@ impl metrique_writer_core::ValueWriter for ValueWriter<'_, '_> {
             }
         }
         buf.push(']');
+
+        if !self.entry.validations.skip_validate_unique {
+            self.validate_string();
+        }
+    }
+
+    fn object<O: metrique_writer_core::ObjectValue + ?Sized>(mut self, object: &O) {
+        let buf = &mut self.entry.state.string_fields_buf;
+        buf.push(',').json_string(&self.name).push(':').push('{');
+        let mut obj_writer = EmfObjectMemberWriter { buf, first: true };
+        object.write_object(&mut obj_writer);
+        obj_writer.buf.push('}');
 
         if !self.entry.validations.skip_validate_unique {
             self.validate_string();
