@@ -231,17 +231,28 @@ pub(crate) fn clean_base_struct(
     expanded
 }
 
-/// Generate `ObjectValue` impl for entry structs.
+/// Generate `ObjectValue` and `ValueFormatter<Entry> for AsObject` impls.
 ///
-/// This impl allows entry structs to be used as nested objects via `#[metrics(format = AsObject)]`.
-/// The blanket `impl<V: ObjectValue> ValueFormatter<V, NotLifted> for AsObject` in
-/// `metrique-writer-core` provides the `ValueFormatter` impl automatically.
+/// This generates two impls per entry type:
+/// 1. `impl ObjectValue for FooEntry` — delegates to `InflectableEntry::write`
+/// 2. `impl ValueFormatter<FooEntry> for AsObject` — concrete, `Lifted` (the default),
+///    enabling auto-lifting through `Option`/`Box`/`Arc`/`Cow` and unambiguous `L`-inference.
+///
+/// There is no blanket `impl<V: ObjectValue> ValueFormatter<V, _> for AsObject` in the
+/// library. Each type gets its own concrete impl to avoid E0283 inference ambiguity.
 fn generate_object_value_impls(entry_name: &Ident, generics: &Generics) -> Ts2 {
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     quote! {
         impl #impl_generics ::metrique::writer::value::ObjectValue for #entry_name #ty_generics #where_clause {
             fn write_object<'__a>(&'__a self, writer: &mut impl ::metrique::writer::EntryWriter<'__a>) {
                 <Self as ::metrique::InflectableEntry<::metrique::Identity>>::write(self, writer);
+            }
+        }
+
+        impl #impl_generics ::metrique::writer::value::ValueFormatter<#entry_name #ty_generics> for ::metrique::writer::value::AsObject #where_clause {
+            const SHAPE: ::metrique::writer::core::descriptor::FieldShape<'static> = ::metrique::writer::core::descriptor::FieldShape::Object;
+            fn format_value(writer: impl ::metrique::writer::ValueWriter, value: &#entry_name #ty_generics) {
+                writer.object(value)
             }
         }
     }

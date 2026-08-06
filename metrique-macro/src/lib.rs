@@ -1035,7 +1035,7 @@ struct RawMetricsFieldAttrs {
     #[darling(default)]
     unit: Option<SpannedKv<syn::Path>>,
 
-    #[darling(default)]
+    #[darling(skip)]
     format: Option<SpannedKv<FormatType>>,
 
     #[darling(default)]
@@ -1068,6 +1068,7 @@ impl<T: FromMeta> FromMeta for SpannedKv<T> {
         let value = T::from_meta(item).map_err(|e| e.with_span(item))?;
         let (key_span, value_span) = match item {
             syn::Meta::NameValue(nv) => (nv.path.span(), nv.value.span()),
+            syn::Meta::List(list) => (list.path.span(), list.delimiter.span().join()),
             _ => return Err(darling::Error::custom("expected a key value pair").with_span(item)),
         };
 
@@ -1081,32 +1082,103 @@ impl<T: FromMeta> FromMeta for SpannedKv<T> {
 
 /// A format type parsed from `#[metrics(format = ...)]` attributes.
 ///
-/// Supports both bare paths (`format = AsObject`) and string-quoted types
-/// with generics (`format = "Each<AsObject>"`).
+/// Parsed via `parse_nested_meta` (same approach as `#[aggregate(strategy = ...)]`)
+/// so that generic types like `Each<AsObject>` work with bare `=` syntax — in type
+/// grammar, `<>` is unambiguous.
 #[derive(Debug, Clone)]
 pub(crate) struct FormatType(pub(crate) syn::Type);
 
-impl FromMeta for FormatType {
-    fn from_expr(expr: &syn::Expr) -> darling::Result<Self> {
-        match expr {
-            syn::Expr::Path(ep) if ep.attrs.is_empty() => {
-                Ok(FormatType(syn::Type::Path(syn::TypePath {
-                    qself: ep.qself.clone(),
-                    path: ep.path.clone(),
-                })))
-            }
-            syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(lit_str),
-                ..
-            }) => {
-                let ty: syn::Type = lit_str
-                    .parse()
-                    .map_err(|e| darling::Error::custom(e).with_span(lit_str))?;
-                Ok(FormatType(ty))
-            }
-            _ => Err(darling::Error::unexpected_expr_type(expr)),
+/// Parse `format = <Type>` from a field's `#[metrics(...)]` attributes using
+/// `parse_nested_meta`. Also returns a modified field with `format = ...` stripped
+/// so that darling doesn't see it (darling uses expression parsing which chokes on
+/// generic type syntax like `Each<AsObject>`).
+fn extract_format_from_field(
+    field: &syn::Field,
+) -> darling::Result<(syn::Field, Option<SpannedKv<FormatType>>)> {
+    use proc_macro2::TokenStream;
+    use quote::ToTokens;
+
+    let mut format_result: Option<SpannedKv<FormatType>> = None;
+    let mut err: Option<syn::Error> = None;
+
+    // First pass: extract the format value
+    for attr in &field.attrs {
+        if !attr.path().is_ident("metrics") {
+            continue;
         }
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("format") {
+                if format_result.is_some() {
+                    err = Some(syn::Error::new_spanned(
+                        &meta.path,
+                        "duplicate `format` attribute",
+                    ));
+                    return Ok(());
+                }
+                let key_span = meta.path.span();
+                let value = meta.value()?;
+                let value_span = value.span();
+                let ty: syn::Type = value.parse()?;
+                format_result = Some(SpannedKv {
+                    key_span,
+                    value_span,
+                    value: FormatType(ty),
+                });
+            }
+            Ok(())
+        });
     }
+
+    if let Some(e) = err {
+        return Err(darling::Error::custom(e.to_string()).with_span(&e.span()));
+    }
+
+    // Second pass: rebuild the field's attrs with `format = ...` stripped from
+    // #[metrics(...)] so darling doesn't choke on it.
+    let mut new_field = field.clone();
+    if format_result.is_some() {
+        new_field.attrs = field
+            .attrs
+            .iter()
+            .map(|attr| {
+                if !attr.path().is_ident("metrics") {
+                    return attr.clone();
+                }
+                // Rebuild the metrics attribute without the `format` item
+                let mut tokens = TokenStream::new();
+                let mut first = true;
+                let _ = attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("format") {
+                        // Skip — consume the `= <value>` but don't emit
+                        let _ = meta.value().and_then(|v| v.parse::<syn::Type>());
+                        return Ok(());
+                    }
+                    // Re-emit this meta item
+                    if !first {
+                        tokens.extend(quote! { , });
+                    }
+                    first = false;
+                    let path = &meta.path;
+                    if meta.input.peek(syn::Token![=]) {
+                        let _eq: syn::Token![=] = meta.input.parse()?;
+                        let val: syn::Expr = meta.input.parse()?;
+                        tokens.extend(quote! { #path = #val });
+                    } else if meta.input.peek(syn::token::Paren) {
+                        let content;
+                        syn::parenthesized!(content in meta.input);
+                        let inner: TokenStream = content.parse()?;
+                        tokens.extend(quote! { #path(#inner) });
+                    } else {
+                        tokens.extend(path.to_token_stream());
+                    }
+                    Ok(())
+                });
+                syn::parse_quote! { #[metrics(#tokens)] }
+            })
+            .collect();
+    }
+
+    Ok((new_field, format_result))
 }
 
 pub(crate) fn parse_metric_fields(
@@ -1122,9 +1194,19 @@ pub(crate) fn parse_metric_fields(
             None => (quote! { #i }, None, field.ty.span()),
         };
 
-        let attrs = match errors
-            .handle(RawMetricsFieldAttrs::from_field(field).and_then(|attr| attr.validate()))
-        {
+        // Extract `format = <Type>` via parse_nested_meta (supports generics
+        // like `Each<AsObject>`), then pass the stripped field to darling.
+        let (stripped_field, format) = match errors.handle(extract_format_from_field(field)) {
+            Some(result) => result,
+            None => continue,
+        };
+
+        let attrs = match errors.handle(
+            RawMetricsFieldAttrs::from_field(&stripped_field).and_then(|mut attr| {
+                attr.format = format;
+                attr.validate()
+            }),
+        ) {
             Some(attrs) => attrs,
             None => {
                 continue;

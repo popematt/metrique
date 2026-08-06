@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Integration tests for object value support: `#[metrics(format = AsObject)]`
-//! and `#[metrics(format = "Each<AsObject>")]`.
+//! and `#[metrics(format = Each<AsObject>)]`.
 
 use metrique::emf::Emf;
 use metrique::unit_of_work::metrics;
@@ -24,7 +24,7 @@ struct Phase {
 struct TreePhase {
     name: &'static str,
     duration_ms: u64,
-    #[metrics(format = "Each<AsObject>")]
+    #[metrics(format = Each<AsObject>)]
     children: Vec<TreePhase>,
 }
 
@@ -36,8 +36,17 @@ struct RequestMetrics {
     timestamp: SystemTime,
     #[metrics(format = AsObject)]
     root_phase: Phase,
-    #[metrics(format = "Each<AsObject>")]
+    #[metrics(format = Each<AsObject>)]
     phases: Vec<Phase>,
+}
+
+/// Test that Option<ObjectValue> auto-lifts through the concrete Lifted impl.
+#[metrics(rename_all = "PascalCase")]
+struct OptionalObjectMetrics {
+    #[metrics(timestamp)]
+    timestamp: SystemTime,
+    #[metrics(format = AsObject)]
+    maybe_phase: Option<Phase>,
 }
 
 #[test]
@@ -131,6 +140,41 @@ fn recursive_object_tree() {
     let grandchildren = children[1]["Children"].as_array().unwrap();
     assert_eq!(grandchildren.len(), 1);
     assert_eq!(grandchildren[0]["Name"], "grandchild");
+}
+
+#[test]
+fn option_object_auto_lifts() {
+    let mut emf = Emf::no_validations("App".into(), vec![vec![]]);
+
+    // Some case: object renders
+    let m = OptionalObjectMetrics {
+        timestamp: UNIX_EPOCH + Duration::from_secs(1),
+        maybe_phase: Some(Phase {
+            kind: "parse",
+            duration_ms: 42,
+        }),
+    };
+    let mut output = vec![];
+    let closed = m.close();
+    let entry = RootEntry::new(closed);
+    emf.format(&entry, &mut output).unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert_eq!(json["MaybePhase"]["Kind"], "parse");
+    assert_eq!(json["MaybePhase"]["DurationMs"], 42);
+
+    // None case: field omitted
+    let m = OptionalObjectMetrics {
+        timestamp: UNIX_EPOCH + Duration::from_secs(1),
+        maybe_phase: None,
+    };
+    let mut output = vec![];
+    let closed = m.close();
+    let entry = RootEntry::new(closed);
+    emf.format(&entry, &mut output).unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output).unwrap()).unwrap();
+    assert!(json.get("MaybePhase").is_none());
 }
 
 #[test]

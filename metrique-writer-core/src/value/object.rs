@@ -25,50 +25,47 @@ pub trait ObjectValue {
 ///
 /// Use with `#[metrics(format = AsObject)]` on fields whose type implements `ObjectValue`
 /// (which the `#[metrics]` derive generates automatically for entry-producing structs).
+///
+/// `AsObject` has no blanket library impl. Instead, the `#[metrics]` derive generates a
+/// concrete `Lifted` `impl ValueFormatter<FooEntry> for AsObject` per entry type. For
+/// hand-implemented types, the user writes the same concrete impl. This design ensures
+/// unambiguous `L`-inference and enables auto-lifting through `Option`/`Box`/`Arc`/`Cow`.
 pub struct AsObject;
-
-impl<V: ObjectValue> super::ValueFormatter<V, super::NotLifted> for AsObject {
-    const SHAPE: crate::descriptor::FieldShape<'static> = crate::descriptor::FieldShape::Object;
-
-    fn format_value(writer: impl super::ValueWriter, value: &V) {
-        writer.object(value)
-    }
-}
 
 /// A [`ValueFormatter`](super::ValueFormatter) that renders each element of an iterable
 /// using an inner formatter, emitting them as a list via [`ValueWriter::values`](super::ValueWriter::values).
 ///
-/// Use with `#[metrics(format = "Each<InnerFormatter>")]` on iterable fields (e.g., `Vec<T>`).
+/// Use with `#[metrics(format(Each<InnerFormatter>))]` on iterable fields (e.g., `Vec<T>`).
 ///
-/// Note: `Each` impls `ValueFormatter<Vec<T>>` and `ValueFormatter<[T; N]>`. For other
-/// collection types, write a custom formatter.
+/// `Each<F>` uses the default `Lifted` liftability, so `Option<Vec<T>>` auto-lifts.
+/// The inner formatter `F` must implement `ValueFormatter<T>` (also `Lifted`).
 pub struct Each<F>(std::marker::PhantomData<F>);
 
-impl<T, F> super::ValueFormatter<Vec<T>, super::NotLifted> for Each<F>
+impl<T, F> super::ValueFormatter<Vec<T>> for Each<F>
 where
-    F: super::ValueFormatter<T, super::NotLifted>,
+    F: super::ValueFormatter<T>,
 {
     const SHAPE: crate::descriptor::FieldShape<'static> = crate::descriptor::FieldShape::List(
-        crate::descriptor::ShapeRef::new(&<F as super::ValueFormatter<T, super::NotLifted>>::SHAPE),
+        crate::descriptor::ShapeRef::new(&<F as super::ValueFormatter<T>>::SHAPE),
     );
 
     fn format_value(writer: impl super::ValueWriter, value: &Vec<T>) {
-        let wrapped: Vec<super::FormattedValue<'_, T, F, super::NotLifted>> =
+        let wrapped: Vec<super::FormattedValue<'_, T, F>> =
             value.iter().map(super::FormattedValue::new).collect();
         writer.values(wrapped.iter());
     }
 }
 
-impl<T, F, const N: usize> super::ValueFormatter<[T; N], super::NotLifted> for Each<F>
+impl<T, F, const N: usize> super::ValueFormatter<[T; N]> for Each<F>
 where
-    F: super::ValueFormatter<T, super::NotLifted>,
+    F: super::ValueFormatter<T>,
 {
     const SHAPE: crate::descriptor::FieldShape<'static> = crate::descriptor::FieldShape::List(
-        crate::descriptor::ShapeRef::new(&<F as super::ValueFormatter<T, super::NotLifted>>::SHAPE),
+        crate::descriptor::ShapeRef::new(&<F as super::ValueFormatter<T>>::SHAPE),
     );
 
     fn format_value(writer: impl super::ValueWriter, value: &[T; N]) {
-        let wrapped: Vec<super::FormattedValue<'_, T, F, super::NotLifted>> =
+        let wrapped: Vec<super::FormattedValue<'_, T, F>> =
             value.iter().map(super::FormattedValue::new).collect();
         writer.values(wrapped.iter());
     }
