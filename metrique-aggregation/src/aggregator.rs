@@ -202,6 +202,51 @@ impl<T: AggregateStrategy> Aggregate<T> {
         sink.append(RootEntry::new(entry));
     }
 
+    /// Closes and inserts every entry produced by `iter`, exactly as calling
+    /// [`insert`](Aggregate::insert) on each would.
+    ///
+    /// Accepts any [`IntoIterator`], so a lazy iterator can be aggregated in a
+    /// single call without materializing its items into a collection first:
+    ///
+    /// ```
+    /// # use metrique::unit_of_work::metrics;
+    /// # use metrique_aggregation::{aggregate, histogram::Histogram};
+    /// # use metrique_aggregation::aggregator::Aggregate;
+    /// # use std::time::Duration;
+    /// # #[aggregate]
+    /// # #[metrics]
+    /// # struct ApiCall {
+    /// #     #[aggregate(strategy = Histogram<Duration>)]
+    /// #     latency: Duration,
+    /// # }
+    /// let mut calls = Aggregate::<ApiCall>::default();
+    /// calls.insert_all((1..=3).map(|ms| ApiCall { latency: Duration::from_millis(ms) }));
+    /// ```
+    pub fn insert_all(&mut self, iter: impl IntoIterator<Item = T>)
+    where
+        T: CloseValue<Closed = T::Source>,
+        T: AggregateStrategy<Key = AggregateMustBeUsedOnStructsWithNoKeys>,
+        T::Source: Merge,
+    {
+        for entry in iter {
+            self.insert(entry);
+        }
+    }
+
+    /// Inserts every entry produced by `iter` without closing, exactly as
+    /// calling [`insert_direct`](Aggregate::insert_direct) on each would.
+    ///
+    /// This is the [`insert_all`](Aggregate::insert_all) equivalent for
+    /// `#[aggregate(direct)]` strategies.
+    pub fn insert_all_direct(&mut self, iter: impl IntoIterator<Item = T::Source>)
+    where
+        T::Source: Merge,
+    {
+        for entry in iter {
+            self.insert_direct(entry);
+        }
+    }
+
     /// Add a new entry to this Aggregate without closing
     ///
     /// This method works when using `#[aggregate(direct)]

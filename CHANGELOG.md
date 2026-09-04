@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- *(metrique-aggregation)* `Aggregate::insert_all` and `Aggregate::insert_all_direct` to aggregate every entry from an `IntoIterator` in a single call, including lazy iterators ([#386](https://github.com/awslabs/metrique/issues/386))
+
 ## [0.1.31](https://github.com/awslabs/metrique/compare/metrique-v0.1.30...metrique-v0.1.31) - 2026-08-24
 
 ### Added

@@ -85,6 +85,161 @@ fn test_macro_aggregation() {
     check!(entry.values["RequestId"] == "1234");
 }
 
+// Shared fixture for the `insert_all` tests below. Same four observations as
+// `test_macro_aggregation`, so the expected aggregated distribution is identical.
+fn sample_api_calls() -> Vec<ApiCall> {
+    vec![
+        ApiCall {
+            latency: Duration::from_millis(100),
+            response_size: 50,
+        },
+        ApiCall {
+            latency: Duration::from_millis(100),
+            response_size: 50,
+        },
+        ApiCall {
+            latency: Duration::from_millis(200),
+            response_size: 75,
+        },
+        ApiCall {
+            latency: Duration::from_millis(150),
+            response_size: 60,
+        },
+    ]
+}
+
+#[test]
+fn test_insert_all_matches_insert() {
+    // `insert_all` must produce the same aggregate as inserting each entry one
+    // at a time. `test_metric` is called on the bare `ApiCall` strategy, so the
+    // field names are the raw `latency`/`response_size` (not flattened/renamed).
+    let mut bulk = Aggregate::<ApiCall>::default();
+    bulk.insert_all(sample_api_calls());
+
+    // Parity: the same entries inserted one at a time must yield the same aggregate.
+    let mut one_at_a_time = Aggregate::<ApiCall>::default();
+    for call in sample_api_calls() {
+        one_at_a_time.insert(call);
+    }
+
+    let bulk = test_metric(bulk);
+    let one_at_a_time = test_metric(one_at_a_time);
+    check!(bulk.metrics["latency"].distribution == one_at_a_time.metrics["latency"].distribution);
+    check!(
+        bulk.metrics["response_size"].as_u64() == one_at_a_time.metrics["response_size"].as_u64()
+    );
+
+    // Also pin to a literal so both paths are anchored to a known-correct value,
+    // not just to each other: the four latencies (100, 100, 200, 150 ms)
+    // sort-and-merge to these buckets.
+    check!(
+        bulk.metrics["latency"].distribution
+            == vec![
+                Observation::Repeated {
+                    total: 200.0,
+                    occurrences: 2
+                },
+                Observation::Repeated {
+                    total: 150.0,
+                    occurrences: 1
+                },
+                Observation::Repeated {
+                    total: 200.0,
+                    occurrences: 1
+                },
+            ]
+    );
+    check!(bulk.metrics["response_size"].as_u64() == 235);
+}
+
+#[test]
+fn test_insert_all_accumulates_into_existing() {
+    // `insert_all` must accumulate onto existing contents rather than replace
+    // them, for both the Sum field and the Histogram field.
+    let mut agg = Aggregate::<ApiCall>::default();
+    agg.insert(ApiCall {
+        latency: Duration::from_millis(100),
+        response_size: 50,
+    });
+    agg.insert_all(sample_api_calls());
+
+    let entry = test_metric(agg);
+    // One seeded entry (50) plus the four from the fixture (50+50+75+60 = 235).
+    check!(entry.metrics["response_size"].as_u64() == 285);
+    // Five observations total: the histogram must include the seeded one.
+    check!(entry.metrics["latency"].num_observations() == 5);
+}
+
+#[test]
+fn test_insert_all_accepts_lazy_iterator() {
+    // The key ergonomic: a lazy iterator can be aggregated at the call site
+    // without the caller materializing it into a collection first.
+    let mut agg = Aggregate::<ApiCall>::default();
+    agg.insert_all((1..=3).map(|ms| ApiCall {
+        latency: Duration::from_millis(ms),
+        response_size: ms as usize,
+    }));
+
+    let entry = test_metric(agg);
+    check!(entry.metrics["response_size"].as_u64() == 6);
+    check!(entry.metrics["latency"].num_observations() == 3);
+}
+
+#[test]
+fn test_insert_all_empty_iterator_is_noop() {
+    // An empty iterator must leave already-accumulated contents untouched.
+    let mut agg = Aggregate::<ApiCall>::default();
+    agg.insert(ApiCall {
+        latency: Duration::from_millis(100),
+        response_size: 42,
+    });
+    agg.insert_all(std::iter::empty());
+
+    let entry = test_metric(agg);
+    check!(entry.metrics["response_size"].as_u64() == 42);
+    check!(entry.metrics["latency"].num_observations() == 1);
+}
+
+#[aggregate(direct)]
+#[metrics]
+#[derive(Clone)]
+struct CountDirect {
+    #[aggregate(strategy = Sum)]
+    count: u64,
+}
+
+#[test]
+fn test_insert_all_direct() {
+    // Direct-mode analogue: `insert_all_direct` merges source values without
+    // closing, exactly as repeated `insert_direct` would. Uses a `Sum` field so
+    // the aggregated value can be asserted exactly (not just by observation count).
+    let mut agg = Aggregate::<CountDirect>::default();
+    agg.insert_all_direct((1..=4).map(|count| CountDirect { count }));
+
+    let entry = test_metric(agg);
+    check!(entry.metrics["count"].as_u64() == 10); // 1 + 2 + 3 + 4
+}
+
+#[test]
+fn test_insert_all_preserves_iteration_order() {
+    // With an order-sensitive strategy (KeepLast), `insert_all` must apply
+    // entries in iteration order so the last one wins.
+    #[aggregate]
+    #[metrics]
+    struct LastWins {
+        #[aggregate(strategy = KeepLast)]
+        value: Option<String>,
+    }
+
+    let mut agg = Aggregate::<LastWins>::default();
+    agg.insert_all(["first", "second", "third"].into_iter().map(|s| LastWins {
+        value: Some(s.to_string()),
+    }));
+
+    let entry = test_metric(agg);
+    check!(entry.values["value"] == "third");
+}
+
 #[aggregate(direct)]
 #[metrics]
 #[derive(Clone)]
