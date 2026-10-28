@@ -1791,7 +1791,7 @@ fn write_emf_object<O: metrique_writer_core::ObjectValue + ?Sized>(
     buf: &mut PrefixedStringBuf,
     object: &O,
 ) {
-    metrique_writer_core::value::write_json_object(buf.as_mut_string(), object);
+    metrique_writer_core::value::write_json_object(buf, object);
 }
 
 impl metrique_writer_core::ValueWriter for ValueWriter<'_, '_> {
