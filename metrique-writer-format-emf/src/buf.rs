@@ -66,6 +66,12 @@ impl PrefixedStringBuf {
         &self.buf
     }
 
+    /// Mutable access to the underlying buffer, for appending already-formatted content such as a
+    /// nested JSON object body. Callers only ever append, so the prefix stays intact.
+    pub fn as_mut_string(&mut self) -> &mut String {
+        &mut self.buf
+    }
+
     pub fn truncate(&mut self, combined_len: usize) {
         assert!(combined_len >= self.prefix_len);
         self.buf.truncate(combined_len);
